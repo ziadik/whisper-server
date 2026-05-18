@@ -1,0 +1,109 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Whisper Server - Распознавание речи</title>
+    <link rel="stylesheet" href="style.css">
+</head>
+<body>
+    <div class="container">
+        <header>
+            <h1>🎙️ Whisper Server</h1>
+            <p>Распознавание речи через локальный сервер с whisper.cpp</p>
+            <div class="server-status" id="serverStatus">
+                <span class="status-indicator"></span>
+                <span id="statusText">Проверка подключения...</span>
+            </div>
+        </header>
+
+        <div class="main-content">
+            <!-- Настройки -->
+            <div class="settings-panel">
+                <h2>Настройки</h2>
+                
+                <div class="setting-group">
+                    <label for="languageSelect">Язык распознавания:</label>
+                    <select id="languageSelect">
+                        <option value="ru">Русский</option>
+                        <option value="en">English</option>
+                        <option value="de">Deutsch</option>
+                        <option value="fr">Français</option>
+                        <option value="es">Español</option>
+                    </select>
+                </div>
+
+                <div class="setting-group">
+                    <label for="recordingMethod">Способ записи:</label>
+                    <select id="recordingMethod">
+                        <option value="microphone">Микрофон (прямая запись)</option>
+                        <option value="file">Загрузка файла</option>
+                    </select>
+                </div>
+            </div>
+
+            <!-- Запись с микрофона -->
+            <div id="microphoneSection" class="recording-section">
+                <div class="recording-controls">
+                    <button id="recordBtn" class="btn btn-record">
+                        <span class="btn-icon">🎤</span>
+                        Начать запись
+                    </button>
+                    <button id="stopBtn" class="btn btn-stop" disabled>
+                        <span class="btn-icon">⏹️</span>
+                        Остановить
+                    </button>
+                </div>
+                
+                <div class="visualizer">
+                    <canvas id="visualizer"></canvas>
+                </div>
+                
+                <div class="recording-info">
+                    <span id="recordingTime">00:00</span>
+                    <span id="recordingStatus"></span>
+                </div>
+            </div>
+
+            <!-- Загрузка файла -->
+            <div id="fileSection" class="file-section" style="display: none;">
+                <div class="file-upload">
+                    <input type="file" id="fileInput" accept=".wav,.mp3,.m4a,.webm" />
+                    <button id="uploadBtn" class="btn btn-primary" disabled>
+                        📤 Распознать файл
+                    </button>
+                </div>
+                <div id="fileInfo" class="file-info"></div>
+            </div>
+
+            <!-- Результаты -->
+            <div class="results-section">
+                <div class="results-header">
+                    <h2>Результат распознавания</h2>
+                    <button id="copyBtn" class="btn btn-small" disabled>📋 Копировать</button>
+                </div>
+                <div class="transcription-result" id="transcriptionResult">
+                    <div class="placeholder">Нажмите на запись или загрузите файл...</div>
+                </div>
+            </div>
+
+            <!-- Прогресс и статус -->
+            <div class="progress-section">
+                <div class="progress-bar" style="display: none;">
+                    <div class="progress-fill"></div>
+                </div>
+                <div class="status-messages" id="statusMessages"></div>
+            </div>
+        </div>
+
+        <footer>
+            <p>Whisper.cpp на сервере | Модель: large-v3-q5_0</p>
+            <p style="font-size: 12px; margin-top: 5px;">
+                ⚠️ Для работы с микрофоном используйте <strong>localhost</strong> или <strong>HTTPS</strong>
+            </p>
+        </footer>
+    </div>
+
+    <script src="client.js"></script>
+</body>
+</html>
