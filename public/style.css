@@ -208,6 +208,103 @@ header h1 {
     font-size: 14px;
 }
 
+/* Стили для тестовых файлов */
+.test-files-list {
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+    max-height: 400px;
+    overflow-y: auto;
+}
+
+.test-file-item {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding: 12px;
+    background: white;
+    border-radius: 8px;
+    border: 1px solid #e5e7eb;
+    transition: all 0.3s;
+}
+
+.test-file-item:hover {
+    background: #f9fafb;
+    transform: translateX(5px);
+    box-shadow: 0 2px 8px rgba(0,0,0,0.1);
+}
+
+.test-file-info {
+    flex: 1;
+}
+
+.test-file-name {
+    font-weight: 500;
+    color: #374151;
+    font-family: monospace;
+}
+
+.test-file-size {
+    font-size: 12px;
+    color: #6b7280;
+    margin-left: 10px;
+}
+
+.test-file-controls {
+    display: flex;
+    gap: 10px;
+}
+
+.btn-test-play {
+    padding: 8px 12px;
+    background: #667eea;
+    color: white;
+    border: none;
+    border-radius: 6px;
+    cursor: pointer;
+    font-size: 14px;
+    transition: all 0.3s;
+}
+
+.btn-test-play:hover {
+    background: #5a67d8;
+    transform: scale(1.05);
+}
+
+.btn-test-transcribe {
+    padding: 8px 12px;
+    background: #4caf50;
+    color: white;
+    border: none;
+    border-radius: 6px;
+    cursor: pointer;
+    font-size: 14px;
+    transition: all 0.3s;
+}
+
+.btn-test-transcribe:hover {
+    background: #45a049;
+    transform: scale(1.05);
+}
+
+.test-audio-player {
+    background: #f3f4f6;
+    padding: 15px;
+    border-radius: 8px;
+    margin-top: 20px;
+}
+
+.test-audio-player h4 {
+    margin-bottom: 10px;
+    color: #374151;
+}
+
+.loading-spinner {
+    text-align: center;
+    padding: 20px;
+    color: #667eea;
+}
+
 .results-section {
     background: #f9fafb;
     border-radius: 12px;
@@ -313,5 +410,15 @@ footer {
     
     .btn {
         padding: 10px 20px;
+    }
+    
+    .test-file-item {
+        flex-direction: column;
+        gap: 10px;
+    }
+    
+    .test-file-controls {
+        width: 100%;
+        justify-content: center;
     }
 }

@@ -10,6 +10,7 @@
     <div class="container">
         <header>
             <h1>🎙️ Whisper Server</h1>
+            <!-- <p>Зядик Дмитрий Сергеевич | https://ziidik.ru/</p> -->
             <p>Распознавание речи через локальный сервер с whisper.cpp</p>
             <div class="server-status" id="serverStatus">
                 <span class="status-indicator"></span>
@@ -36,8 +37,9 @@
                 <div class="setting-group">
                     <label for="recordingMethod">Способ записи:</label>
                     <select id="recordingMethod">
-                        <option value="microphone">Микрофон (прямая запись)</option>
-                        <option value="file">Загрузка файла</option>
+                        <option value="microphone">🎤 Микрофон (прямая запись)</option>
+                        <option value="file">📤 Загрузка файла</option>
+                        <option value="test">📁 Тестовые файлы</option>
                     </select>
                 </div>
             </div>
@@ -76,6 +78,22 @@
                 <div id="fileInfo" class="file-info"></div>
             </div>
 
+            <!-- Тестовые файлы -->
+            <div id="testSection" class="file-section" style="display: none;">
+                <h3 style="margin-bottom: 15px;">📁 Тестовые аудиофайлы</h3>
+                <p style="color: #666; margin-bottom: 15px; font-size: 14px;">
+                    Предустановленные файлы из папки <code>example/</code>
+                </p>
+                <div id="testFileList" class="test-files-list">
+                    <div class="loading-spinner">⏳ Загрузка списка файлов...</div>
+                </div>
+                
+                <div id="testAudioPlayer" class="test-audio-player" style="display: none; margin-top: 20px;">
+                    <h4>🎵 Плеер</h4>
+                    <audio id="testAudio" controls style="width: 100%;"></audio>
+                </div>
+            </div>
+
             <!-- Результаты -->
             <div class="results-section">
                 <div class="results-header">
@@ -97,7 +115,8 @@
         </div>
 
         <footer>
-            <p>Whisper.cpp на сервере | Модель: large-v3-q5_0</p>
+            <p>Whisper.cpp на сервере | Модель: ggml-small-q8_0</p>
+            <p>Зядик Дмитрий Сергеевич | https://ziidik.ru/</p>
             <p style="font-size: 12px; margin-top: 5px;">
                 ⚠️ Для работы с микрофоном используйте <strong>localhost</strong> или <strong>HTTPS</strong>
             </p>

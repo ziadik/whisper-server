@@ -1,2 +1,219 @@
+# Зависимости Node.js
 node_modules/
-models/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+package-lock.json
+yarn.lock
+
+# Файлы сборки и временные файлы
+dist/
+build/
+.DS_Store
+*.log
+*.tmp
+*.temp
+*.bak
+*.swp
+*.swo
+*~
+
+# Файлы окружения
+.env
+.env.local
+.env.*.local
+.env.production
+.env.development
+
+# Логи сервера
+logs/
+*.log
+server.log
+error.log
+combined.log
+
+# Папка загрузок (временные аудио файлы)
+whisper150/uploads/
+whisper/uploads/
+uploads/
+*.wav
+*.webm
+*.mp3
+*.m4a
+*.ogg
+
+# Модели Whisper (большие файлы, можно скачать отдельно)
+whisper150/models/*.bin
+whisper/models/*.bin
+*.bin
+models/*.bin
+
+# Исполняемые файлы Whisper
+whisper150/main.exe
+whisper150/whisper-cli.exe
+whisper/main.exe
+whisper/whisper-cli.exe
+*.exe
+
+# SSL сертификаты (никогда не публикуйте их в репозиторий!)
+*.pem
+*.key
+*.crt
+*.pfx
+*.p12
+certs/
+cert.pem
+key.pem
+
+# Папка с тестовыми файлами (если они большие)
+example/*.wav
+example/*.mp3
+example/*.webm
+!example/README.md
+
+# IDE и редакторы
+.vscode/
+.idea/
+*.sublime-*
+.project
+.classpath
+.settings/
+*.swp
+*.swo
+*~
+
+# Windows
+Thumbs.db
+desktop.ini
+ehthumbs.db
+*.dll
+*.exe
+*.msi
+
+# macOS
+.AppleDouble
+.LSOverride
+._*
+.DS_Store
+.Spotlight-V100
+.Trashes
+.fseventsd
+
+# Linux
+.directory
+*.pid
+*.socket
+
+# Инструменты разработки
+.nyc_output/
+coverage/
+.nyc_output/
+.grunt/
+node_modules/.bin/
+
+# Nodemon
+nodemon-debug.json
+
+# PM2
+.pm2/
+pm2-*.log
+
+# Docker
+.docker/
+docker-compose.override.yml
+*.tar.gz
+*.tgz
+
+# Резервные копии
+*.backup
+*.old
+*.orig
+*.rej
+
+# Временные файлы редакторов
+*.crswap
+*.rbc
+*.rbo
+
+# Файлы профилирования
+profile.log
+heap-*.heapsnapshot
+cpu-*.cpuprofile
+
+# Отчеты тестов
+test-results.xml
+test-report.html
+.coverage/
+
+# Файлы базы данных (если есть)
+*.db
+*.sqlite
+*.sqlite3
+
+# Redis
+dump.rdb
+
+# Отладка
+debug.log
+.vscode/launch.json
+
+# Проект специфичные
+# Папка с аудио для тестов (оставить только README)
+example/*.wav
+example/*.mp3
+example/*.webm
+!example/example_files_readme.md
+
+# Статус сервера
+server-status.json
+health-check.json
+
+# WebSocket логи
+websocket-logs/
+*.wslog
+
+# Временные файлы FFmpeg
+*.m3u8
+*.ts
+*.mp4
+*.mkv
+
+# Файлы конфигурации пользователя
+*.user
+*.userprefs
+*.suo
+
+# Результаты транскрипции (если сохраняете)
+transcriptions/
+results/
+*.txt
+!README.md
+!LICENSE
+
+# Jupyter Notebook (если используете)
+.ipynb_checkpoints/
+*.ipynb
+
+# TypeScript (если перейдете на TS)
+*.tsbuildinfo
+*.js.map
+*.d.ts.map
+
+# Пакетные менеджеры
+.npm/
+.nvm/
+.yarn/
+.pnpm-store/
+
+# Линтеры и форматтеры
+.eslintcache
+.prettierrc
+.stylelintcache
+
+# Папка для дампов
+dumps/
+core.*
+
+# Журналы производительности
+perf-logs/
+*.perf

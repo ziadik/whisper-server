@@ -64,7 +64,6 @@ class WhisperClient {
       return false;
     }
 
-    // Проверяем, работает ли сайт по HTTPS или localhost
     const isSecure =
       location.protocol === "https:" ||
       location.hostname === "localhost" ||
@@ -110,12 +109,9 @@ class WhisperClient {
           "error",
         );
       } else if (!data.executableExists) {
-        if (statusText) statusText.textContent = "⚠️ whisper-cli.exe не найден";
+        if (statusText) statusText.textContent = "⚠️ main.exe не найден";
         if (indicator) indicator.style.background = "#ef4444";
-        this.addStatusMessage(
-          "whisper-cli.exe не найден в папке whisper/",
-          "error",
-        );
+        this.addStatusMessage("main.exe не найден в папке whisper/", "error");
       } else {
         if (statusText) statusText.textContent = "✅ Сервер готов";
         if (indicator) indicator.style.background = "#4ade80";
@@ -171,7 +167,6 @@ class WhisperClient {
 
       this.ws.onclose = () => {
         console.log("WebSocket disconnected");
-        // Пытаемся переподключиться через 5 секунд
         setTimeout(() => {
           if (this.ws && this.ws.readyState === WebSocket.CLOSED) {
             this.initWebSocket();
@@ -204,28 +199,149 @@ class WhisperClient {
     }
   }
 
-  async startRecording() {
-    // Проверка поддержки микрофона
-    if (!this.checkMicrophoneSupport()) {
-      return;
+  async loadTestFiles() {
+    try {
+      const response = await fetch("/api/test-files");
+      const data = await response.json();
+
+      const fileListDiv = document.getElementById("testFileList");
+      if (!fileListDiv) return;
+
+      if (!data.files || data.files.length === 0) {
+        fileListDiv.innerHTML =
+          '<p style="color: #999;">📁 Нет тестовых файлов в папке example/</p>';
+        return;
+      }
+
+      fileListDiv.innerHTML = "";
+
+      for (const file of data.files) {
+        const fileItem = document.createElement("div");
+        fileItem.className = "test-file-item";
+        fileItem.innerHTML = `
+          <div class="test-file-info">
+            <span class="test-file-name">🎵 ${file.name}</span>
+            <span class="test-file-size">(${(file.size / 1024).toFixed(2)} KB)</span>
+          </div>
+          <div class="test-file-controls">
+            <button class="btn-test-play" data-file="${file.path}">▶️</button>
+            <button class="btn-test-transcribe" data-file="${file.name}" data-path="${file.path}">🎯 Распознать</button>
+          </div>
+        `;
+
+        const playBtn = fileItem.querySelector(".btn-test-play");
+        const transcribeBtn = fileItem.querySelector(".btn-test-transcribe");
+
+        playBtn.addEventListener("click", () => this.playTestFile(file.path));
+        transcribeBtn.addEventListener("click", () =>
+          this.transcribeTestFile(file.name, file.path),
+        );
+
+        fileListDiv.appendChild(fileItem);
+      }
+    } catch (error) {
+      console.error("Error loading test files:", error);
+      const fileListDiv = document.getElementById("testFileList");
+      if (fileListDiv) {
+        fileListDiv.innerHTML =
+          '<p style="color: #ef4444;">❌ Ошибка загрузки списка файлов</p>';
+      }
     }
+  }
+
+  playTestFile(filePath) {
+    const audioPlayer = document.getElementById("testAudioPlayer");
+    const audioElement = document.getElementById("testAudio");
+
+    if (!audioPlayer || !audioElement) return;
+
+    audioElement.src = filePath;
+    audioElement.load();
+    audioPlayer.style.display = "block";
+
+    audioElement.play().catch((err) => {
+      console.warn("Auto-play prevented:", err);
+      this.addStatusMessage("Нажмите Play для воспроизведения", "info");
+    });
+
+    this.addStatusMessage(
+      `▶️ Воспроизведение: ${filePath.split("/").pop()}`,
+      "info",
+    );
+  }
+
+  async transcribeTestFile(fileName, filePath) {
+    this.addStatusMessage(
+      `📤 Отправка файла ${fileName} на транскрипцию...`,
+      "info",
+    );
 
     try {
-      // Запрашиваем доступ к микрофону
+      const response = await fetch(filePath);
+      const blob = await response.blob();
+
+      const formData = new FormData();
+      const language = document.getElementById("languageSelect")?.value || "ru";
+
+      formData.append("audio", blob, fileName);
+      formData.append("language", language);
+
+      this.showProgress();
+      this.setTranscriptionResult(
+        "🎙️ Распознаю аудио... Пожалуйста, подождите",
+        "processing",
+      );
+
+      const transcribeResponse = await fetch("/api/transcribe", {
+        method: "POST",
+        body: formData,
+      });
+
+      const data = await transcribeResponse.json();
+
+      if (data.success) {
+        this.setTranscriptionResult(data.text, "success");
+        this.addStatusMessage(
+          `✅ Файл "${fileName}" успешно распознан`,
+          "success",
+        );
+      } else {
+        throw new Error(data.error || "Unknown error");
+      }
+    } catch (error) {
+      console.error("Test file transcription error:", error);
+      this.setTranscriptionResult(`❌ Ошибка: ${error.message}`, "error");
+      this.addStatusMessage(`Ошибка распознавания: ${error.message}`, "error");
+    } finally {
+      this.hideProgress();
+    }
+  }
+  async startRecording() {
+    if (!this.checkMicrophoneSupport()) return;
+
+    try {
       this.addStatusMessage("Запрос доступа к микрофону...", "info");
 
+      // Запрашиваем микрофон с нужными параметрами
       this.stream = await navigator.mediaDevices.getUserMedia({
         audio: {
-          channelCount: 1,
-          sampleRate: 16000,
-          sampleSize: 16,
+          channelCount: 1, // Моно
+          sampleRate: 16000, // 16kHz
+          sampleSize: 16, // 16bit
+          echoCancellation: true,
+          noiseSuppression: true,
+          autoGainControl: true,
         },
       });
 
       this.audioChunks = [];
-      this.mediaRecorder = new MediaRecorder(this.stream, {
-        mimeType: this.getSupportedMimeType(),
-      });
+
+      // Используем MediaRecorder с WebM (будет конвертирован на сервере)
+      // Или используем WAV если браузер поддерживает
+      const mimeType = MediaRecorder.isTypeSupported("audio/wav")
+        ? "audio/wav"
+        : "audio/webm";
+      this.mediaRecorder = new MediaRecorder(this.stream, { mimeType });
 
       this.mediaRecorder.ondataavailable = (event) => {
         if (event.data.size > 0) {
@@ -234,20 +350,27 @@ class WhisperClient {
       };
 
       this.mediaRecorder.onstop = async () => {
+        let audioBlob;
         const mimeType = this.mediaRecorder.mimeType;
-        const audioBlob = new Blob(this.audioChunks, { type: mimeType });
+
+        if (mimeType === "audio/wav") {
+          // Если уже WAV, отправляем как есть
+          audioBlob = new Blob(this.audioChunks, { type: "audio/wav" });
+        } else {
+          // Если WebM, создаем blob с правильным типом
+          audioBlob = new Blob(this.audioChunks, { type: "audio/webm" });
+        }
+
         await this.transcribeAudio(audioBlob);
 
-        // Останавливаем все треки
         if (this.stream) {
           this.stream.getTracks().forEach((track) => track.stop());
           this.stream = null;
         }
       };
 
-      // Начинаем запись с интервалом в 1 секунду для получения данных
+      // Записываем кусками по 1 секунде
       this.mediaRecorder.start(1000);
-
       this.isRecording = true;
       this.startTime = Date.now();
 
@@ -260,7 +383,10 @@ class WhisperClient {
       this.startVisualization(this.stream);
       this.updateRecordingTime();
 
-      this.addStatusMessage("🎤 Запись началась... Говорите четко", "success");
+      this.addStatusMessage(
+        "🎤 Запись началась (16kHz, 16bit)... Говорите четко",
+        "success",
+      );
     } catch (error) {
       console.error("Error starting recording:", error);
 
@@ -271,8 +397,9 @@ class WhisperClient {
         errorMessage += "Микрофон не найден";
       } else if (error.name === "NotReadableError") {
         errorMessage += "Микрофон занят другим приложением";
-      } else if (error.name === "SecurityError") {
-        errorMessage += "Доступ к микрофону запрещен политиками безопасности";
+      } else if (error.name === "OverconstrainedError") {
+        errorMessage +=
+          "Микрофон не поддерживает требуемые параметры (16kHz, 16bit)";
       } else {
         errorMessage += error.message;
       }
@@ -456,10 +583,10 @@ class WhisperClient {
     if (file && uploadBtn && fileInfo) {
       uploadBtn.disabled = false;
       fileInfo.innerHTML = `
-                📁 Файл: ${file.name}<br>
-                📦 Размер: ${(file.size / 1024).toFixed(2)} KB<br>
-                🎵 Тип: ${file.type || "audio/*"}
-            `;
+        📁 Файл: ${file.name}<br>
+        📦 Размер: ${(file.size / 1024).toFixed(2)} KB<br>
+        🎵 Тип: ${file.type || "audio/*"}
+      `;
     } else if (uploadBtn) {
       uploadBtn.disabled = true;
       if (fileInfo) fileInfo.innerHTML = "";
@@ -558,13 +685,25 @@ class WhisperClient {
   toggleRecordingMethod(method) {
     const micSection = document.getElementById("microphoneSection");
     const fileSection = document.getElementById("fileSection");
+    const testSection = document.getElementById("testSection");
 
     if (method === "microphone") {
       if (micSection) micSection.style.display = "block";
       if (fileSection) fileSection.style.display = "none";
-    } else {
+      if (testSection) testSection.style.display = "none";
+    } else if (method === "file") {
       if (micSection) micSection.style.display = "none";
       if (fileSection) fileSection.style.display = "block";
+      if (testSection) testSection.style.display = "none";
+    } else if (method === "test") {
+      if (micSection) micSection.style.display = "none";
+      if (fileSection) fileSection.style.display = "none";
+      if (testSection) testSection.style.display = "block";
+
+      if (testSection && !testSection.hasAttribute("data-loaded")) {
+        this.loadTestFiles();
+        testSection.setAttribute("data-loaded", "true");
+      }
     }
   }
 
@@ -586,7 +725,6 @@ class WhisperClient {
     container.appendChild(messageDiv);
     messageDiv.scrollIntoView({ behavior: "smooth", block: "nearest" });
 
-    // Автоочистка через 50 сообщений
     if (container.children.length > 50) {
       container.removeChild(container.children[0]);
     }
@@ -637,8 +775,6 @@ class WhisperClient {
     return div.innerHTML;
   }
 }
-
-
 
 // Инициализация при загрузке страницы
 document.addEventListener("DOMContentLoaded", () => {
