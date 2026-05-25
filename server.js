@@ -16,6 +16,7 @@ try {
     key: fs.readFileSync(path.join(__dirname, "key.pem")),
     cert: fs.readFileSync(path.join(__dirname, "cert.pem")),
   };
+  console.log("✅ SSL certificates loaded");
 } catch (error) {
   console.error("❌ SSL certificates not found!");
   console.error(
@@ -34,15 +35,27 @@ app.use(express.urlencoded({ extended: true, limit: "50mb" }));
 app.use(express.static("public"));
 app.use("/example", express.static("example"));
 
+// Обработка favicon
+app.get("/favicon.ico", (req, res) => {
+  res.status(204).end();
+});
+
 // Пути
 const WHISPER_DIR = path.join(__dirname, "whisper150");
 const UPLOADS_DIR = path.join(WHISPER_DIR, "uploads");
 const MODELS_DIR = path.join(WHISPER_DIR, "models");
+const EXAMPLE_DIR = path.join(__dirname, "example");
 
 // Создаем папки
 if (!fs.existsSync(UPLOADS_DIR)) {
   fs.mkdirSync(UPLOADS_DIR, { recursive: true });
   console.log(`📁 Created uploads directory: ${UPLOADS_DIR}`);
+}
+
+if (!fs.existsSync(EXAMPLE_DIR)) {
+  fs.mkdirSync(EXAMPLE_DIR, { recursive: true });
+  console.log(`📁 Created example directory: ${EXAMPLE_DIR}`);
+  console.log(`   Place test audio files in this folder`);
 }
 
 // Настройка multer
@@ -114,6 +127,10 @@ function broadcastStatus(status, data = null) {
 // Функция конвертации в WAV с помощью FFmpeg
 function convertToWav(inputPath, outputPath) {
   return new Promise((resolve, reject) => {
+    console.log(
+      `🔄 Converting: ${path.basename(inputPath)} -> ${path.basename(outputPath)}`,
+    );
+
     const ffmpeg = spawn("ffmpeg", [
       "-i",
       inputPath,
@@ -130,7 +147,13 @@ function convertToWav(inputPath, outputPath) {
     let stderr = "";
 
     ffmpeg.stderr.on("data", (data) => {
-      stderr += data.toString();
+      const chunk = data.toString();
+      stderr += chunk;
+      // Показываем прогресс
+      const progressMatch = chunk.match(/size=\s*(\d+)kB/);
+      if (progressMatch) {
+        console.log(`   Progress: ${progressMatch[1]} kB processed`);
+      }
     });
 
     ffmpeg.on("close", (code) => {
@@ -138,7 +161,7 @@ function convertToWav(inputPath, outputPath) {
         console.log("✅ FFmpeg conversion successful");
         resolve();
       } else {
-        console.error("FFmpeg error:", stderr);
+        console.error("❌ FFmpeg error:", stderr);
         reject(
           new Error(`FFmpeg conversion failed: ${stderr.substring(0, 200)}`),
         );
@@ -146,8 +169,10 @@ function convertToWav(inputPath, outputPath) {
     });
 
     ffmpeg.on("error", (error) => {
-      console.error("FFmpeg process error:", error);
-      reject(new Error(`FFmpeg not found: ${error.message}`));
+      console.error("❌ FFmpeg process error:", error);
+      reject(
+        new Error(`FFmpeg not found: ${error.message}. Please install FFmpeg.`),
+      );
     });
   });
 }
@@ -170,7 +195,7 @@ async function transcribeAudio(audioFilename, language = "ru") {
     }
 
     console.log(
-      `\n📁 Original file: ${audioFilename} (${(stats.size / 1024).toFixed(2)} KB)`,
+      `\n📁 Original webm file: ${audioFilename} (${(stats.size / 1024).toFixed(2)} KB)`,
     );
 
     // Конвертируем WebM в WAV
@@ -178,15 +203,25 @@ async function transcribeAudio(audioFilename, language = "ru") {
     await convertToWav(originalPath, wavPath);
 
     // Проверяем сконвертированный файл
+    if (!fs.existsSync(wavPath)) {
+      throw new Error("Converted WAV file not found");
+    }
+
     const wavStats = fs.statSync(wavPath);
+    if (wavStats.size < 1000) {
+      throw new Error(`Converted WAV file too small (${wavStats.size} bytes)`);
+    }
+
     console.log(
       `📁 Converted WAV: ${wavFilename} (${(wavStats.size / 1024).toFixed(2)} KB)`,
     );
 
     // Удаляем оригинальный WebM файл
     try {
-      fs.unlinkSync(originalPath);
-      console.log(`🗑️ Deleted original: ${audioFilename}`);
+      if (fs.existsSync(originalPath)) {
+        fs.unlinkSync(originalPath);
+        console.log(`🗑️ Deleted original webm: ${audioFilename}`);
+      }
     } catch (err) {}
 
     const relativeWavPath = path.join("uploads", wavFilename);
@@ -267,7 +302,10 @@ async function transcribeAudio(audioFilename, language = "ru") {
           !chunk.includes("whisper_init") &&
           !chunk.includes("whisper_print_timings")
         ) {
-          console.log("STDERR:", chunk.trim());
+          // Выводим только важные ошибки
+          if (!chunk.includes("pcm_s16le")) {
+            console.log("STDERR:", chunk.trim());
+          }
         }
       });
 
@@ -279,7 +317,7 @@ async function transcribeAudio(audioFilename, language = "ru") {
         try {
           if (fs.existsSync(wavPath)) {
             fs.unlinkSync(wavPath);
-            console.log(`🗑️ Deleted: ${wavFilename}`);
+            console.log(`🗑️ Deleted temp WAV: ${wavFilename}`);
           }
         } catch (err) {}
 
@@ -474,6 +512,7 @@ server.listen(PORT, "0.0.0.0", () => {
   console.log("🎙️  WHISPER SERVER STARTED (HTTPS)");
   console.log("=".repeat(60));
   console.log(`\n🌐 HTTPS Server URL: https://localhost:${PORT}`);
+  console.log(`🌐 Network access: https://YOUR_IP:${PORT}`);
 
   console.log(`\n📁 Configuration:`);
   console.log(`   Whisper dir: ${WHISPER_DIR}`);
@@ -481,10 +520,31 @@ server.listen(PORT, "0.0.0.0", () => {
   console.log(`   Language: ${WHISPER_CONFIG.language}`);
   console.log(`   Threads: ${WHISPER_CONFIG.threads}`);
 
+  console.log(`\n✅ Status:`);
+
+  const executablePath = path.join(WHISPER_DIR, WHISPER_CONFIG.executable);
+  if (!fs.existsSync(executablePath)) {
+    console.log(`   ❌ main.exe NOT FOUND`);
+  } else {
+    console.log(`   ✓ main.exe found`);
+  }
+
+  const modelPath = path.join(WHISPER_DIR, WHISPER_CONFIG.model);
+  if (!fs.existsSync(modelPath)) {
+    console.log(`   ❌ Model NOT FOUND`);
+  } else {
+    const stats = fs.statSync(modelPath);
+    console.log(
+      `   ✓ Model found (${(stats.size / 1024 / 1024).toFixed(2)} MB)`,
+    );
+  }
+
   // Проверка FFmpeg
   const ffmpegTest = spawn("ffmpeg", ["-version"]);
   ffmpegTest.on("error", () => {
     console.log(`\n⚠️  WARNING: FFmpeg not found!`);
+    console.log(`   Please install FFmpeg for audio conversion`);
+    console.log(`   Download: https://www.gyan.dev/ffmpeg/builds/`);
   });
   ffmpegTest.on("close", (code) => {
     if (code === 0) {
@@ -492,5 +552,11 @@ server.listen(PORT, "0.0.0.0", () => {
     }
   });
 
+  console.log(`\n💡 Ready for transcription!`);
+  console.log(
+    `   Audio files will be converted from WebM to WAV (16kHz/16bit/mono)`,
+  );
+  console.log(`\n⚠️  Note: Using self-signed certificate`);
+  console.log(`   In browser, click "Advanced" -> "Proceed to site"`);
   console.log("\n" + "=".repeat(60) + "\n");
 });
