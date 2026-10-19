@@ -323,57 +323,120 @@ function convertToWav(inputPath, outputPath) {
 }
 
 // ============================================================
-// ФУНКЦИЯ 2: Обрезка тишины в начале и конце
+// ФУНКЦИЯ 2: Обрезка тишины (безопасная версия)
 // ============================================================
 function trimSilence(inputPath, outputPath) {
   return new Promise((resolve) => {
     console.log(`✂️  Trimming silence: ${path.basename(inputPath)}`);
 
-    const ffmpeg = spawn("ffmpeg", [
-      "-i",
+    // Проверяем длительность до обрезки
+    const ffprobe = spawn("ffprobe", [
+      "-v",
+      "error",
+      "-show_entries",
+      "format=duration",
+      "-of",
+      "default=noprint_wrappers=1:nokey=1",
       inputPath,
-      "-af",
-      "silenceremove=start_periods=1:start_duration=1:start_threshold=-50dB:detection=peak,areverse,silenceremove=start_periods=1:start_duration=1:start_threshold=-50dB:detection=peak,areverse",
-      "-acodec",
-      "pcm_s16le",
-      "-ar",
-      "16000",
-      "-ac",
-      "1",
-      "-y",
-      outputPath,
     ]);
 
-    let stderr = "";
-    ffmpeg.stderr.on("data", (data) => {
-      stderr += data.toString();
+    let durationStr = "";
+    ffprobe.stdout.on("data", (data) => {
+      durationStr += data.toString();
     });
 
-    ffmpeg.on("close", (code) => {
-      if (code === 0) {
-        const stats = fs.existsSync(outputPath)
-          ? fs.statSync(outputPath)
-          : null;
-        if (!stats || stats.size < 1000) {
-          console.log(
-            `   ⚠️ File after trim is too small — probably silence only`,
-          );
-          try {
-            fs.unlinkSync(outputPath);
-          } catch (e) {}
-          resolve(null);
+    ffprobe.on("error", () => {
+      resolve(inputPath);
+    });
+
+    ffprobe.on("close", () => {
+      const originalDuration = parseFloat(durationStr.trim()) || 0;
+
+      const ffmpeg = spawn("ffmpeg", [
+        "-i",
+        inputPath,
+        // Менее агрессивный фильтр: -40dB, минимум 2 сек тишины
+        "-af",
+        "silenceremove=start_periods=1:start_duration=2:start_threshold=-40dB:detection=peak,areverse,silenceremove=start_periods=1:start_duration=2:start_threshold=-40dB:detection=peak,areverse",
+        "-acodec",
+        "pcm_s16le",
+        "-ar",
+        "16000",
+        "-ac",
+        "1",
+        "-y",
+        outputPath,
+      ]);
+
+      let stderr = "";
+      ffmpeg.stderr.on("data", (data) => {
+        stderr += data.toString();
+      });
+
+      ffmpeg.on("error", () => {
+        resolve(inputPath);
+      });
+
+      ffmpeg.on("close", (code) => {
+        if (code !== 0) {
+          console.error("❌ FFmpeg trim error:", stderr);
+          resolve(inputPath);
           return;
         }
-        console.log(`✅ Silence trimmed`);
-        resolve(outputPath);
-      } else {
-        console.error("❌ FFmpeg trim error:", stderr);
-        resolve(inputPath);
-      }
-    });
 
-    ffmpeg.on("error", () => {
-      resolve(inputPath);
+        // Проверяем длительность после обрезки
+        const ffprobe2 = spawn("ffprobe", [
+          "-v",
+          "error",
+          "-show_entries",
+          "format=duration",
+          "-of",
+          "default=noprint_wrappers=1:nokey=1",
+          outputPath,
+        ]);
+
+        let newDurationStr = "";
+        ffprobe2.stdout.on("data", (data) => {
+          newDurationStr += data.toString();
+        });
+
+        ffprobe2.on("error", () => {
+          resolve(outputPath);
+        });
+
+        ffprobe2.on("close", () => {
+          const newDuration = parseFloat(newDurationStr.trim()) || 0;
+
+          // Если после обрезки осталось < 50% исходного — используем оригинал
+          if (newDuration < originalDuration * 0.5) {
+            console.log(
+              `   ⚠️ Trimmed too much (${newDuration.toFixed(1)}s of ${originalDuration.toFixed(1)}s) — using original`,
+            );
+            try {
+              fs.unlinkSync(outputPath);
+            } catch (e) {}
+            resolve(inputPath);
+            return;
+          }
+
+          // Если осталось < 1 сек — считаем тишиной
+          if (newDuration < 1) {
+            console.log(
+              `   ⚠️ File after trim is too small — probably silence only`,
+            );
+            try {
+              fs.unlinkSync(outputPath);
+            } catch (e) {}
+            resolve(null);
+            return;
+          }
+
+          console.log(
+            `✅ Silence trimmed (${originalDuration.toFixed(1)}s → ${newDuration.toFixed(1)}s)`,
+          );
+          resolve(outputPath);
+        });
+      });
     });
   });
 }
@@ -462,41 +525,27 @@ function splitAudio(inputPath, segmentTime = 600) {
 // ============================================================
 // ФУНКЦИЯ 4: Распознавание ОДНОГО WAV файла
 // ============================================================
-function transcribeSingleFile(
-  wavPath,
-  language,
-  options = {},
-  modelKey = DEFAULT_MODEL,
-) {
+function transcribeSingleFile(wavPath, language, options = {}, modelKey = DEFAULT_MODEL) {
   return new Promise((resolve, reject) => {
     const model = AVAILABLE_MODELS[modelKey] || AVAILABLE_MODELS[DEFAULT_MODEL];
     const relativeWavPath = path.join("uploads", path.basename(wavPath));
 
     const args = [
-      "-m",
-      model.path,
-      "-f",
-      relativeWavPath,
-      "-l",
-      language,
-      "-t",
-      WHISPER_CONFIG.threads.toString(),
-      "--no-timestamps",
+      "-m", model.path,
+      "-f", relativeWavPath,
+      "-l", language,
+      "-t", WHISPER_CONFIG.threads.toString(),
+      "-nt",  // --no-timestamps
     ];
 
-    // Анти-галлюцинации
+    // Анти-галлюцинации — только поддерживаемые флаги
     if (options.antiHallucination) {
-      args.push("--no-context");
-      args.push("--suppress-nst");
-      args.push("--max-context", "0");
-    }
-
-    if (options.temperature !== undefined) {
-      args.push("--temperature", options.temperature.toString());
+      args.push("-mc", "0");  // --max-context 0
+      args.push("-nf");       // --no-fallback
     }
 
     if (options.beamSize) {
-      args.push("--beam-size", options.beamSize.toString());
+      args.push("-bs", options.beamSize.toString());  // --beam-size
     }
 
     console.log(`\n🚀 Whisper: ${path.basename(wavPath)}`);
@@ -540,11 +589,7 @@ function transcribeSingleFile(
           "",
         );
 
-        if (
-          cleanLine &&
-          cleanLine.length > 0 &&
-          !cleanLine.includes("system_info")
-        ) {
+        if (cleanLine && cleanLine.length > 0 && !cleanLine.includes("system_info")) {
           transcribedText += (transcribedText ? " " : "") + cleanLine;
           console.log(`   📝 ${path.basename(wavPath)}: "${cleanLine}"`);
         }
@@ -561,9 +606,7 @@ function transcribeSingleFile(
         !chunk.includes("whisper_init") &&
         !chunk.includes("whisper_print_timings")
       ) {
-        if (!chunk.includes("pcm_s16le")) {
-          console.log("STDERR:", chunk.trim().substring(0, 200));
-        }
+        console.log("STDERR:", chunk.trim().substring(0, 300));
       }
     });
 
@@ -571,7 +614,7 @@ function transcribeSingleFile(
       if (code !== 0) {
         reject(
           new Error(
-            `Whisper failed with code ${code}: ${stderr.substring(0, 200)}`,
+            `Whisper failed with code ${code}: ${stderr.substring(0, 300)}`,
           ),
         );
         return;
