@@ -10,8 +10,10 @@
     <div class="container">
         <header>
             <h1>🎙️ Whisper Server</h1>
-            <!-- <p>Зядик Дмитрий Сергеевич | https://ziidik.ru/</p> -->
             <p>Распознавание речи через локальный сервер с whisper.cpp</p>
+            <p class="author-header">
+                Автор: <a href="https://ziidik.ru/" target="_blank" rel="noopener">Зядик Дмитрий Сергеевич</a>
+            </p>
             <div class="server-status" id="serverStatus">
                 <span class="status-indicator"></span>
                 <span id="statusText">Проверка подключения...</span>
@@ -42,6 +44,71 @@
                         <option value="test">📁 Тестовые файлы</option>
                     </select>
                 </div>
+
+                <!-- Модель распознавания -->
+                <div class="setting-group">
+                    <label for="modelSelect">Модель распознавания:</label>
+                    <select id="modelSelect">
+                        <option value="small" selected>⚡ Small (258 MB) — быстро</option>
+                        <option value="medium">⚖️ Medium (804 MB) — баланс</option>
+                        <option value="large">🐌 Large (1 GB) — максимум</option>
+                    </select>
+                    <small id="modelInfo" style="display: block; margin-top: 5px; color: #6b7280; font-size: 12px;"></small>
+                </div>
+
+                <!-- Качество распознавания -->
+                <div class="setting-group quality-settings">
+                    <label class="quality-label">🎯 Качество распознавания:</label>
+                    
+                    <div class="preset-group">
+                        <label for="qualityPreset">Пресет:</label>
+                        <select id="qualityPreset">
+                            <option value="fast">⚡ Быстро (без защиты)</option>
+                            <option value="balanced" selected>⚖️ Баланс (рекомендуется)</option>
+                            <option value="accurate">🎯 Максимальное (медленно)</option>
+                            <option value="paranoid">🛡️ Анти-галлюцинации (очень медленно)</option>
+                        </select>
+                    </div>
+
+                    <details class="advanced-settings">
+                        <summary>Дополнительные настройки</summary>
+                        
+                        <label class="checkbox-label">
+                            <input type="checkbox" id="antiHallucination" checked>
+                            <span>Подавлять галлюцинации (повторы)</span>
+                        </label>
+                        
+                        <label class="checkbox-label">
+                            <input type="checkbox" id="trimSilence" checked>
+                            <span>Обрезать тишину перед Whisper</span>
+                        </label>
+                        
+                        <label class="checkbox-label">
+                            <input type="checkbox" id="cleanRepeats" checked>
+                            <span>Удалять повторы в тексте</span>
+                        </label>
+
+                        <div class="inline-settings">
+                            <div>
+                                <label for="temperatureSelect">Температура:</label>
+                                <select id="temperatureSelect">
+                                    <option value="0" selected>0.0 (детерминированно)</option>
+                                    <option value="0.2">0.2 (баланс)</option>
+                                    <option value="0.4">0.4 (разнообразие)</option>
+                                </select>
+                            </div>
+                            <div>
+                                <label for="beamSizeSelect">Beam size:</label>
+                                <select id="beamSizeSelect">
+                                    <option value="1">1 (быстро)</option>
+                                    <option value="3">3</option>
+                                    <option value="5" selected>5 (качество)</option>
+                                    <option value="8">8 (макс.)</option>
+                                </select>
+                            </div>
+                        </div>
+                    </details>
+                </div>
             </div>
 
             <!-- Запись с микрофона -->
@@ -70,7 +137,7 @@
             <!-- Загрузка файла -->
             <div id="fileSection" class="file-section" style="display: none;">
                 <div class="file-upload">
-                    <input type="file" id="fileInput" accept=".wav,.mp3,.m4a,.webm" />
+                    <input type="file" id="fileInput" accept=".wav,.mp3,.m4a,.webm,.ogg,.flac,.aac" />
                     <button id="uploadBtn" class="btn btn-primary" disabled>
                         📤 Распознать файл
                     </button>
@@ -98,7 +165,17 @@
             <div class="results-section">
                 <div class="results-header">
                     <h2>Результат распознавания</h2>
-                    <button id="copyBtn" class="btn btn-small" disabled>📋 Копировать</button>
+                    <div class="results-controls">
+                        <label class="view-toggle">
+                            <input type="radio" name="resultView" value="with-time" checked>
+                            <span>⏱ С таймкодами</span>
+                        </label>
+                        <label class="view-toggle">
+                            <input type="radio" name="resultView" value="without-time">
+                            <span>📝 Без таймкодов</span>
+                        </label>
+                        <button id="copyBtn" class="btn btn-small" disabled>📋 Копировать</button>
+                    </div>
                 </div>
                 <div class="transcription-result" id="transcriptionResult">
                     <div class="placeholder">Нажмите на запись или загрузите файл...</div>
@@ -115,10 +192,12 @@
         </div>
 
         <footer>
-            <p>Whisper.cpp на сервере | Модель: ggml-small-q8_0</p>
-            <p>Зядик Дмитрий Сергеевич | https://ziidik.ru/</p>
+            <p>Whisper.cpp на сервере | Модели: small / medium / large</p>
             <p style="font-size: 12px; margin-top: 5px;">
                 ⚠️ Для работы с микрофоном используйте <strong>localhost</strong> или <strong>HTTPS</strong>
+            </p>
+            <p class="author-footer">
+                Зядик Дмитрий Сергеевич | <a href="https://ziidik.ru/" target="_blank" rel="noopener">https://ziidik.ru/</a>
             </p>
         </footer>
     </div>

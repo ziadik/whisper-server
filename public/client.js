@@ -9,20 +9,254 @@ class WhisperClient {
     this.startTime = null;
     this.ws = null;
     this.stream = null;
+    this.progressInterval = null;
+    this.recordingTimer = null;
+    this.currentProcessingPart = null;
+    this.totalParts = null;
+    this.liveTextParts = [];
+    this.availableModels = [];
+
+    // Последний результат и режим просмотра
+    this.lastResult = { text: "", segments: [] };
+    this.viewMode = "with-time"; // 'with-time' | 'without-time'
 
     this.init();
   }
 
   async init() {
     this.bindEvents();
+    this.initQualityPreset();
+    this.initViewMode();
+    await this.loadModels();
     await this.checkServerStatus();
     this.initWebSocket();
     this.loadLanguages();
     this.checkMicrophoneSupport();
   }
 
+  // ============================================================
+  // Режим просмотра (с таймкодами / без)
+  // ============================================================
+  initViewMode() {
+    const radios = document.querySelectorAll('input[name="resultView"]');
+    const saved = localStorage.getItem("viewMode") || "with-time";
+    this.viewMode = saved;
+
+    radios.forEach((radio) => {
+      if (radio.value === saved) radio.checked = true;
+
+      radio.addEventListener("change", (e) => {
+        this.viewMode = e.target.value;
+        localStorage.setItem("viewMode", this.viewMode);
+        this.renderResult();
+      });
+    });
+  }
+
+  // ============================================================
+  // Модели
+  // ============================================================
+  async loadModels() {
+    try {
+      const response = await fetch("/api/models");
+      const data = await response.json();
+      this.availableModels = data.models || [];
+
+      const select = document.getElementById("modelSelect");
+      if (!select) return;
+
+      select.innerHTML = "";
+
+      for (const model of this.availableModels) {
+        const option = document.createElement("option");
+        option.value = model.key;
+        option.textContent = `${model.speed} ${model.name.replace(".bin", "")} (${model.sizeMB} MB)`;
+        if (!model.exists) {
+          option.disabled = true;
+          option.textContent += " — не найдена";
+        }
+        if (model.key === data.default) {
+          option.selected = true;
+        }
+        select.appendChild(option);
+      }
+
+      const saved = localStorage.getItem("selectedModel");
+      if (saved) {
+        const opt = select.querySelector(
+          `option[value="${saved}"]:not(:disabled)`,
+        );
+        if (opt) select.value = saved;
+      }
+
+      this.updateModelInfo();
+
+      select.addEventListener("change", () => {
+        this.updateModelInfo();
+        localStorage.setItem("selectedModel", select.value);
+      });
+    } catch (error) {
+      console.error("Failed to load models:", error);
+    }
+  }
+
+  updateModelInfo() {
+    const select = document.getElementById("modelSelect");
+    const info = document.getElementById("modelInfo");
+    if (!select || !info) return;
+
+    const selectedKey = select.value;
+    const model = this.availableModels.find((m) => m.key === selectedKey);
+    if (model) {
+      info.innerHTML = `Качество: <strong>${model.quality}</strong> | Скорость: ${model.speed} | Размер: ${model.sizeMB} MB`;
+    }
+  }
+
+  getSelectedModel() {
+    const select = document.getElementById("modelSelect");
+    return select?.value || "small";
+  }
+
+  // ============================================================
+  // Пресеты качества
+  // ============================================================
+  initQualityPreset() {
+    const presetSelect = document.getElementById("qualityPreset");
+    if (!presetSelect) return;
+
+    const saved = localStorage.getItem("qualityPreset") || "balanced";
+    presetSelect.value = saved;
+    this.applyPreset(saved);
+
+    presetSelect.addEventListener("change", (e) => {
+      localStorage.setItem("qualityPreset", e.target.value);
+      this.applyPreset(e.target.value);
+    });
+
+    [
+      "antiHallucination",
+      "trimSilence",
+      "cleanRepeats",
+      "temperatureSelect",
+      "beamSizeSelect",
+    ].forEach((id) => {
+      const el = document.getElementById(id);
+      if (el) {
+        el.addEventListener("change", () => {
+          presetSelect.value = "custom";
+        });
+      }
+    });
+  }
+
+  applyPreset(preset) {
+    const antiHallucination = document.getElementById("antiHallucination");
+    const trimSilence = document.getElementById("trimSilence");
+    const cleanRepeats = document.getElementById("cleanRepeats");
+    const temperature = document.getElementById("temperatureSelect");
+    const beamSize = document.getElementById("beamSizeSelect");
+
+    switch (preset) {
+      case "fast":
+        if (antiHallucination) antiHallucination.checked = false;
+        if (trimSilence) trimSilence.checked = false;
+        if (cleanRepeats) cleanRepeats.checked = false;
+        if (temperature) temperature.value = "0";
+        if (beamSize) beamSize.value = "1";
+        break;
+      case "balanced":
+        if (antiHallucination) antiHallucination.checked = true;
+        if (trimSilence) trimSilence.checked = true;
+        if (cleanRepeats) cleanRepeats.checked = true;
+        if (temperature) temperature.value = "0";
+        if (beamSize) beamSize.value = "5";
+        break;
+      case "accurate":
+        if (antiHallucination) antiHallucination.checked = true;
+        if (trimSilence) trimSilence.checked = true;
+        if (cleanRepeats) cleanRepeats.checked = true;
+        if (temperature) temperature.value = "0";
+        if (beamSize) beamSize.value = "8";
+        break;
+      case "paranoid":
+        if (antiHallucination) antiHallucination.checked = true;
+        if (trimSilence) trimSilence.checked = true;
+        if (cleanRepeats) cleanRepeats.checked = true;
+        if (temperature) temperature.value = "0";
+        if (beamSize) beamSize.value = "8";
+        break;
+    }
+  }
+
+  getQualityOptions() {
+    const preset =
+      document.getElementById("qualityPreset")?.value || "balanced";
+
+    if (preset !== "custom") {
+      switch (preset) {
+        case "fast":
+          return {
+            antiHallucination: false,
+            trimSilence: false,
+            cleanRepeats: false,
+            temperature: 0,
+            beamSize: 1,
+          };
+        case "balanced":
+          return {
+            antiHallucination: true,
+            trimSilence: true,
+            cleanRepeats: true,
+            temperature: 0,
+            beamSize: 5,
+          };
+        case "accurate":
+          return {
+            antiHallucination: true,
+            trimSilence: true,
+            cleanRepeats: true,
+            temperature: 0,
+            beamSize: 8,
+          };
+        case "paranoid":
+          return {
+            antiHallucination: true,
+            trimSilence: true,
+            cleanRepeats: true,
+            temperature: 0,
+            beamSize: 8,
+          };
+      }
+    }
+
+    return {
+      antiHallucination:
+        document.getElementById("antiHallucination")?.checked || false,
+      trimSilence: document.getElementById("trimSilence")?.checked || false,
+      cleanRepeats: document.getElementById("cleanRepeats")?.checked || false,
+      temperature: parseFloat(
+        document.getElementById("temperatureSelect")?.value || "0",
+      ),
+      beamSize: parseInt(
+        document.getElementById("beamSizeSelect")?.value || "5",
+      ),
+    };
+  }
+
+  appendQualityOptions(formData) {
+    const opts = this.getQualityOptions();
+    formData.append("antiHallucination", opts.antiHallucination ? "1" : "0");
+    formData.append("trimSilence", opts.trimSilence ? "1" : "0");
+    formData.append("cleanRepeats", opts.cleanRepeats ? "1" : "0");
+    formData.append("temperature", opts.temperature);
+    formData.append("beamSize", opts.beamSize);
+    formData.append("model", this.getSelectedModel());
+  }
+
+  // ============================================================
+  // События
+  // ============================================================
   bindEvents() {
-    // Кнопки записи
     const recordBtn = document.getElementById("recordBtn");
     const stopBtn = document.getElementById("stopBtn");
 
@@ -30,7 +264,6 @@ class WhisperClient {
       recordBtn.addEventListener("click", () => this.startRecording());
     if (stopBtn) stopBtn.addEventListener("click", () => this.stopRecording());
 
-    // Загрузка файла
     const fileInput = document.getElementById("fileInput");
     const uploadBtn = document.getElementById("uploadBtn");
 
@@ -38,11 +271,9 @@ class WhisperClient {
       fileInput.addEventListener("change", (e) => this.handleFileSelect(e));
     if (uploadBtn) uploadBtn.addEventListener("click", () => this.uploadFile());
 
-    // Копирование результата
     const copyBtn = document.getElementById("copyBtn");
     if (copyBtn) copyBtn.addEventListener("click", () => this.copyResult());
 
-    // Переключение метода записи
     const methodSelect = document.getElementById("recordingMethod");
     if (methodSelect)
       methodSelect.addEventListener("change", (e) =>
@@ -100,6 +331,25 @@ class WhisperClient {
         if (statusText) statusText.textContent = "✅ Сервер готов к работе";
         if (indicator) indicator.style.background = "#4ade80";
         this.addStatusMessage("Сервер подключен и готов к работе", "success");
+
+        if (data.models) {
+          const available = Object.entries(data.models)
+            .filter(([_, exists]) => exists)
+            .map(([key]) => key);
+          if (available.length > 0) {
+            this.addStatusMessage(
+              `🤖 Доступные модели: ${available.join(", ")}`,
+              "info",
+            );
+          }
+        }
+
+        if (data.config && data.config.splitThresholdMB) {
+          this.addStatusMessage(
+            `✂️ Нарезка: файлы > ${data.config.splitThresholdMB} MB на части по ${data.config.segmentTimeSec / 60} мин`,
+            "info",
+          );
+        }
       } else if (!data.modelLoaded) {
         if (statusText)
           statusText.textContent = "⚠️ Модель не найдена на сервере";
@@ -147,13 +397,89 @@ class WhisperClient {
       this.ws.onmessage = (event) => {
         try {
           const data = JSON.parse(event.data);
-          if (data.type === "status") {
-            this.addStatusMessage(data.data?.message || data.status, "info");
-            if (data.status === "processing") {
-              this.showProgress();
-            }
-          } else if (data.type === "connected") {
+
+          if (data.type === "connected") {
             this.addStatusMessage(data.message, "success");
+            return;
+          }
+
+          if (data.type === "status") {
+            const message = data.data?.message || data.status;
+
+            if (data.status === "processing") {
+              this.addStatusMessage(message, "info");
+              this.showProgress();
+              this.resetLiveResult();
+              this.showLiveResult();
+              return;
+            }
+
+            if (data.status === "split") {
+              this.totalParts = data.data?.totalParts || null;
+              this.addStatusMessage(
+                `✂️ Файл разбит на ${this.totalParts} частей`,
+                "info",
+              );
+              this.showLiveResult();
+              return;
+            }
+
+            if (data.status === "part_start") {
+              this.currentProcessingPart = data.data?.currentPart || null;
+              this.totalParts = data.data?.totalParts || this.totalParts;
+              const startStr = data.data?.startTimeFormatted || "";
+              const endStr = data.data?.endTimeFormatted || "";
+              const label =
+                startStr && endStr ? ` (${startStr} – ${endStr})` : "";
+              this.addStatusMessage(
+                `Обработка части ${this.currentProcessingPart}/${this.totalParts}${label}...`,
+                "info",
+              );
+              this.updateProgressForParts();
+              this.showLiveResult();
+              return;
+            }
+
+            if (data.status === "part_result") {
+              const partText = data.data?.text || "";
+              const currentPart = data.data?.currentPart || null;
+              const totalParts = data.data?.totalParts || this.totalParts;
+              const startTime = data.data?.startTime;
+              const endTime = data.data?.endTime;
+              const startStr = data.data?.startTimeFormatted || "";
+              const endStr = data.data?.endTimeFormatted || "";
+              const segments = data.data?.segments || [];
+
+              if (partText) {
+                this.appendLiveResult(
+                  partText,
+                  currentPart,
+                  totalParts,
+                  startTime,
+                  endTime,
+                  segments,
+                );
+                this.addStatusMessage(
+                  `✅ Часть ${currentPart}/${totalParts} (${startStr} – ${endStr}) распознана (${partText.length} симв., ${segments.length} сегм.)`,
+                  "success",
+                );
+              } else {
+                this.addStatusMessage(
+                  `⚠️ Часть ${currentPart}/${totalParts} (${startStr} – ${endStr}) пуста`,
+                  "info",
+                );
+              }
+
+              this.updateProgressForParts();
+              return;
+            }
+
+            if (data.status === "part_error") {
+              this.addStatusMessage(message, "error");
+              return;
+            }
+
+            this.addStatusMessage(message, "info");
           }
         } catch (err) {
           console.error("WebSocket message parse error:", err);
@@ -285,28 +611,29 @@ class WhisperClient {
 
       formData.append("audio", blob, fileName);
       formData.append("language", language);
+      this.appendQualityOptions(formData);
 
+      this.resetProgressState();
+      this.resetLiveResult();
       this.showProgress();
-      this.setTranscriptionResult(
-        "🎙️ Распознаю аудио... Пожалуйста, подождите",
-        "processing",
-      );
+      this.showLiveResult();
 
-      const transcribeResponse = await fetch("/api/transcribe", {
-        method: "POST",
-        body: formData,
-      });
+      const transcribeResponse = await this.fetchWithTimeout(
+        "/api/transcribe",
+        { method: "POST", body: formData },
+        60 * 60 * 1000,
+      );
 
       const data = await transcribeResponse.json();
 
       if (data.success) {
-        this.setTranscriptionResult(data.text, "success");
+        this.setTranscriptionResult(data.text, "success", data.segments || []);
         this.addStatusMessage(
-          `✅ Файл "${fileName}" успешно распознан`,
+          `✅ Файл "${fileName}" успешно распознан (модель: ${data.model || "?"})`,
           "success",
         );
       } else {
-        throw new Error(data.error || "Unknown error");
+        throw new Error(data.error || data.details || "Unknown error");
       }
     } catch (error) {
       console.error("Test file transcription error:", error);
@@ -316,18 +643,18 @@ class WhisperClient {
       this.hideProgress();
     }
   }
+
   async startRecording() {
     if (!this.checkMicrophoneSupport()) return;
 
     try {
       this.addStatusMessage("Запрос доступа к микрофону...", "info");
 
-      // Запрашиваем микрофон с нужными параметрами
       this.stream = await navigator.mediaDevices.getUserMedia({
         audio: {
-          channelCount: 1, // Моно
-          sampleRate: 16000, // 16kHz
-          sampleSize: 16, // 16bit
+          channelCount: 1,
+          sampleRate: 16000,
+          sampleSize: 16,
           echoCancellation: true,
           noiseSuppression: true,
           autoGainControl: true,
@@ -336,8 +663,6 @@ class WhisperClient {
 
       this.audioChunks = [];
 
-      // Используем MediaRecorder с WebM (будет конвертирован на сервере)
-      // Или используем WAV если браузер поддерживает
       const mimeType = MediaRecorder.isTypeSupported("audio/wav")
         ? "audio/wav"
         : "audio/webm";
@@ -350,14 +675,12 @@ class WhisperClient {
       };
 
       this.mediaRecorder.onstop = async () => {
-        let audioBlob;
         const mimeType = this.mediaRecorder.mimeType;
+        let audioBlob;
 
         if (mimeType === "audio/wav") {
-          // Если уже WAV, отправляем как есть
           audioBlob = new Blob(this.audioChunks, { type: "audio/wav" });
         } else {
-          // Если WebM, создаем blob с правильным типом
           audioBlob = new Blob(this.audioChunks, { type: "audio/webm" });
         }
 
@@ -369,7 +692,6 @@ class WhisperClient {
         }
       };
 
-      // Записываем кусками по 1 секунде
       this.mediaRecorder.start(1000);
       this.isRecording = true;
       this.startTime = Date.now();
@@ -536,7 +858,7 @@ class WhisperClient {
       timeElement.textContent = `${minutes.toString().padStart(2, "0")}:${seconds.toString().padStart(2, "0")}`;
     }
 
-    setTimeout(() => this.updateRecordingTime(), 1000);
+    this.recordingTimer = setTimeout(() => this.updateRecordingTime(), 1000);
   }
 
   async transcribeAudio(audioBlob) {
@@ -545,26 +867,30 @@ class WhisperClient {
 
     formData.append("audio", audioBlob, "recording.wav");
     formData.append("language", language);
+    this.appendQualityOptions(formData);
 
+    this.resetProgressState();
+    this.resetLiveResult();
     this.showProgress();
-    this.setTranscriptionResult(
-      "🎙️ Распознаю аудио... Пожалуйста, подождите",
-      "processing",
-    );
+    this.showLiveResult();
 
     try {
-      const response = await fetch("/api/transcribe", {
-        method: "POST",
-        body: formData,
-      });
+      const response = await this.fetchWithTimeout(
+        "/api/transcribe",
+        { method: "POST", body: formData },
+        60 * 60 * 1000,
+      );
 
       const data = await response.json();
 
       if (data.success) {
-        this.setTranscriptionResult(data.text, "success");
-        this.addStatusMessage("✅ Транскрипция успешно завершена", "success");
+        this.setTranscriptionResult(data.text, "success", data.segments || []);
+        this.addStatusMessage(
+          `✅ Транскрипция успешно завершена (модель: ${data.model || "?"})`,
+          "success",
+        );
       } else {
-        throw new Error(data.error || "Unknown error");
+        throw new Error(data.error || data.details || "Unknown error");
       }
     } catch (error) {
       console.error("Transcription error:", error);
@@ -580,16 +906,33 @@ class WhisperClient {
     const uploadBtn = document.getElementById("uploadBtn");
     const fileInfo = document.getElementById("fileInfo");
 
-    if (file && uploadBtn && fileInfo) {
-      uploadBtn.disabled = false;
+    if (!file) {
+      if (uploadBtn) uploadBtn.disabled = true;
+      if (fileInfo) fileInfo.innerHTML = "";
+      return;
+    }
+
+    const MAX_SIZE = 500 * 1024 * 1024;
+    const sizeMB = (file.size / 1024 / 1024).toFixed(2);
+
+    let warning = "";
+    if (file.size > MAX_SIZE) {
+      warning = `<br><span style="color: #ef4444;">⚠️ Файл слишком большой (макс. 500 MB)</span>`;
+      if (uploadBtn) uploadBtn.disabled = true;
+    } else if (file.size > 20 * 1024 * 1024) {
+      warning = `<br><span style="color: #f59e0b;">ℹ️ Большой файл — будет обработан по частям (может занять время)</span>`;
+      if (uploadBtn) uploadBtn.disabled = false;
+    } else {
+      if (uploadBtn) uploadBtn.disabled = false;
+    }
+
+    if (fileInfo) {
       fileInfo.innerHTML = `
         📁 Файл: ${file.name}<br>
-        📦 Размер: ${(file.size / 1024).toFixed(2)} KB<br>
+        📦 Размер: ${sizeMB} MB<br>
         🎵 Тип: ${file.type || "audio/*"}
+        ${warning}
       `;
-    } else if (uploadBtn) {
-      uploadBtn.disabled = true;
-      if (fileInfo) fileInfo.innerHTML = "";
     }
   }
 
@@ -606,26 +949,30 @@ class WhisperClient {
     const formData = new FormData();
     formData.append("audio", file);
     formData.append("language", language);
+    this.appendQualityOptions(formData);
 
+    this.resetProgressState();
+    this.resetLiveResult();
     this.showProgress();
-    this.setTranscriptionResult(
-      "📤 Загрузка и обработка файла...",
-      "processing",
-    );
+    this.showLiveResult();
 
     try {
-      const response = await fetch("/api/transcribe", {
-        method: "POST",
-        body: formData,
-      });
+      const response = await this.fetchWithTimeout(
+        "/api/transcribe",
+        { method: "POST", body: formData },
+        60 * 60 * 1000,
+      );
 
       const data = await response.json();
 
       if (data.success) {
-        this.setTranscriptionResult(data.text, "success");
-        this.addStatusMessage("✅ Файл успешно распознан", "success");
+        this.setTranscriptionResult(data.text, "success", data.segments || []);
+        this.addStatusMessage(
+          `✅ Файл успешно распознан (модель: ${data.model || "?"})`,
+          "success",
+        );
       } else {
-        throw new Error(data.error || "Unknown error");
+        throw new Error(data.error || data.details || "Unknown error");
       }
     } catch (error) {
       console.error("Upload error:", error);
@@ -639,32 +986,228 @@ class WhisperClient {
     }
   }
 
-  setTranscriptionResult(text, type) {
+  async fetchWithTimeout(url, options = {}, timeoutMs = 60000) {
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
+
+    try {
+      const response = await fetch(url, {
+        ...options,
+        signal: controller.signal,
+      });
+      return response;
+    } catch (error) {
+      if (error.name === "AbortError") {
+        throw new Error(
+          `Превышено время ожидания (${Math.round(timeoutMs / 60000)} мин)`,
+        );
+      }
+      throw error;
+    } finally {
+      clearTimeout(timeoutId);
+    }
+  }
+
+  // ============================================================
+  // Результат — с сохранением и отрисовкой по режиму
+  // ============================================================
+  setTranscriptionResult(text, type, segments = []) {
     const resultDiv = document.getElementById("transcriptionResult");
     const copyBtn = document.getElementById("copyBtn");
 
     if (!resultDiv) return;
 
     if (type === "processing") {
+      if (document.getElementById("liveResult")) return;
       resultDiv.innerHTML = `<div class="processing" style="text-align: center; color: #667eea;">${text}</div>`;
       if (copyBtn) copyBtn.disabled = true;
-    } else if (type === "success") {
-      resultDiv.innerHTML = `<div class="result-text" style="white-space: pre-wrap; word-wrap: break-word;">${this.escapeHtml(text)}</div>`;
-      if (copyBtn) copyBtn.disabled = false;
-    } else {
+      return;
+    }
+
+    if (type === "error") {
       resultDiv.innerHTML = `<div class="error-text" style="text-align: center; color: #ef4444;">${this.escapeHtml(text)}</div>`;
       if (copyBtn) copyBtn.disabled = true;
+      return;
     }
+
+    // Успех
+    this.lastResult = {
+      text: text || "",
+      segments: segments || [],
+    };
+
+    this.renderResult();
+    if (copyBtn) copyBtn.disabled = false;
+  }
+
+  renderResult() {
+    const resultDiv = document.getElementById("transcriptionResult");
+    if (!resultDiv) return;
+
+    const { text, segments } = this.lastResult;
+
+    if (!text && (!segments || segments.length === 0)) {
+      resultDiv.innerHTML = `<div class="placeholder">Нет результата</div>`;
+      return;
+    }
+
+    // Режим "Без таймкодов"
+    if (this.viewMode === "without-time") {
+      resultDiv.innerHTML = `<div class="result-text" style="white-space: pre-wrap; word-wrap: break-word;">${this.escapeHtml(text)}</div>`;
+      return;
+    }
+
+    // Режим "С таймкодами"
+    if (segments && segments.length > 0) {
+      const segmentsHtml = segments
+        .map(
+          (seg) => `
+            <div class="result-segment">
+              <span class="result-segment-time">[${this.formatTime(seg.start)} – ${this.formatTime(seg.end)}]</span>
+              <span class="result-segment-text">${this.escapeHtml(seg.text)}</span>
+            </div>
+          `,
+        )
+        .join("");
+      resultDiv.innerHTML = `<div class="result-with-timestamps">${segmentsHtml}</div>`;
+    } else {
+      resultDiv.innerHTML = `<div class="result-text" style="white-space: pre-wrap; word-wrap: break-word;">${this.escapeHtml(text)}</div>`;
+    }
+  }
+
+  resetLiveResult() {
+    const resultDiv = document.getElementById("transcriptionResult");
+    if (!resultDiv) return;
+
+    resultDiv.innerHTML = `
+      <div id="liveResult" class="live-result">
+        <div class="live-header">
+          <span id="liveHeaderText">Ожидание результата...</span>
+        </div>
+        <div id="liveText" class="live-text"></div>
+      </div>
+    `;
+    this.liveTextParts = [];
+    this.lastResult = { text: "", segments: [] };
+  }
+
+  showLiveResult() {
+    const resultDiv = document.getElementById("transcriptionResult");
+    if (!resultDiv) return;
+
+    if (!document.getElementById("liveResult")) {
+      this.resetLiveResult();
+    }
+  }
+
+  appendLiveResult(
+    text,
+    currentPart,
+    totalParts,
+    startTime,
+    endTime,
+    segments = [],
+  ) {
+    const container = document.getElementById("liveText");
+    const liveHeader = document.getElementById("liveHeaderText");
+
+    if (!container) {
+      this.showLiveResult();
+    }
+
+    const container2 = document.getElementById("liveText");
+    if (!container2) return;
+
+    let timeLabel = "";
+    if (startTime !== undefined && endTime !== undefined) {
+      const startStr = this.formatTime(startTime);
+      const endStr = this.formatTime(endTime);
+      timeLabel = `<span class="live-part-time">⏱ ${startStr} – ${endStr}</span>`;
+    }
+
+    const partDiv = document.createElement("div");
+    partDiv.className = "live-part";
+
+    // Если режим "без таймкодов" — только текст
+    if (
+      this.viewMode === "without-time" ||
+      !segments ||
+      segments.length === 0
+    ) {
+      partDiv.innerHTML = `
+        <div class="live-part-header">
+          <span class="live-part-label">Часть ${currentPart}/${totalParts}</span>
+          ${timeLabel}
+        </div>
+        <div class="live-part-text">${this.escapeHtml(text)}</div>
+      `;
+    } else {
+      const segmentsHtml = segments
+        .map(
+          (seg) => `
+            <div class="live-segment">
+              <span class="live-segment-time">[${this.formatTime(seg.start)} – ${this.formatTime(seg.end)}]</span>
+              <span class="live-segment-text">${this.escapeHtml(seg.text)}</span>
+            </div>
+          `,
+        )
+        .join("");
+
+      partDiv.innerHTML = `
+        <div class="live-part-header">
+          <span class="live-part-label">Часть ${currentPart}/${totalParts}</span>
+          ${timeLabel}
+        </div>
+        ${segmentsHtml}
+      `;
+    }
+
+    container2.appendChild(partDiv);
+    container2.scrollTop = container2.scrollHeight;
+
+    if (liveHeader) {
+      liveHeader.textContent = `Распознано ${currentPart} из ${totalParts} частей`;
+    }
+
+    if (!this.liveTextParts) this.liveTextParts = [];
+    this.liveTextParts.push({ text, startTime, endTime, segments });
+  }
+
+  formatTime(seconds) {
+    if (seconds === undefined || seconds === null) return "??:??";
+    seconds = Math.floor(seconds);
+    const h = Math.floor(seconds / 3600);
+    const m = Math.floor((seconds % 3600) / 60);
+    const s = seconds % 60;
+    if (h > 0) {
+      return `${h}:${String(m).padStart(2, "0")}:${String(s).padStart(2, "0")}`;
+    }
+    return `${String(m).padStart(2, "0")}:${String(s).padStart(2, "0")}`;
   }
 
   copyResult() {
     const resultDiv = document.getElementById("transcriptionResult");
     if (!resultDiv) return;
 
-    const text = resultDiv.innerText;
+    let textToCopy = "";
+
+    if (this.viewMode === "without-time") {
+      textToCopy = this.lastResult.text || "";
+    } else {
+      if (this.lastResult.segments && this.lastResult.segments.length > 0) {
+        textToCopy = this.lastResult.segments
+          .map(
+            (seg) =>
+              `[${this.formatTime(seg.start)} – ${this.formatTime(seg.end)}] ${seg.text}`,
+          )
+          .join("\n");
+      } else {
+        textToCopy = this.lastResult.text || "";
+      }
+    }
 
     navigator.clipboard
-      .writeText(text)
+      .writeText(textToCopy)
       .then(() => {
         this.addStatusMessage("📋 Текст скопирован в буфер обмена", "success");
         const copyBtn = document.getElementById("copyBtn");
@@ -730,6 +1273,22 @@ class WhisperClient {
     }
   }
 
+  resetProgressState() {
+    this.currentProcessingPart = null;
+    this.totalParts = null;
+
+    const progressBar = document.querySelector(".progress-bar");
+    const progressFill = document.querySelector(".progress-fill");
+
+    if (progressBar) progressBar.style.display = "none";
+    if (progressFill) progressFill.style.width = "0%";
+
+    if (this.progressInterval) {
+      clearInterval(this.progressInterval);
+      this.progressInterval = null;
+    }
+  }
+
   showProgress() {
     const progressBar = document.querySelector(".progress-bar");
     const progressFill = document.querySelector(".progress-fill");
@@ -740,16 +1299,30 @@ class WhisperClient {
     progressFill.style.width = "0%";
 
     let width = 0;
-    const interval = setInterval(() => {
-      if (width >= 90) {
-        clearInterval(interval);
-      } else {
-        width += 10;
+    this.progressInterval = setInterval(() => {
+      if (this.totalParts && this.currentProcessingPart) {
+        this.updateProgressForParts();
+        return;
+      }
+
+      if (width < 30) {
+        width += 2;
         progressFill.style.width = width + "%";
       }
-    }, 500);
+    }, 1000);
+  }
 
-    this.progressInterval = interval;
+  updateProgressForParts() {
+    const progressFill = document.querySelector(".progress-fill");
+    if (!progressFill || !this.totalParts) return;
+
+    const basePercent = 30;
+    const partPercent =
+      ((this.currentProcessingPart || 0) / this.totalParts) *
+      (100 - basePercent);
+    const totalPercent = basePercent + partPercent;
+
+    progressFill.style.width = Math.min(totalPercent, 99) + "%";
   }
 
   hideProgress() {
@@ -766,7 +1339,11 @@ class WhisperClient {
 
     if (this.progressInterval) {
       clearInterval(this.progressInterval);
+      this.progressInterval = null;
     }
+
+    this.currentProcessingPart = null;
+    this.totalParts = null;
   }
 
   escapeHtml(text) {
@@ -776,7 +1353,6 @@ class WhisperClient {
   }
 }
 
-// Инициализация при загрузке страницы
 document.addEventListener("DOMContentLoaded", () => {
   window.client = new WhisperClient();
 });
