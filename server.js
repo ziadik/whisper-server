@@ -102,7 +102,6 @@ const WHISPER_CONFIG = {
   threads: 4,
 };
 
-// Доступные модели
 const AVAILABLE_MODELS = {
   small: {
     name: "ggml-small-q8_0.bin",
@@ -213,6 +212,46 @@ function getAudioDuration(filePath) {
 }
 
 // ============================================================
+// Утилита: проверка, что файл — уже правильный WAV (16kHz/16bit/mono)
+// ============================================================
+function isAlreadyValidWav(filePath) {
+  return new Promise((resolve) => {
+    const ffprobe = spawn("ffprobe", [
+      "-v",
+      "error",
+      "-select_streams",
+      "a:0",
+      "-show_entries",
+      "stream=codec_name,sample_rate,channels",
+      "-of",
+      "default=noprint_wrappers=1",
+      filePath,
+    ]);
+
+    let stdout = "";
+    ffprobe.stdout.on("data", (data) => {
+      stdout += data.toString();
+    });
+
+    ffprobe.on("close", () => {
+      const codec = (stdout.match(/codec_name=(\w+)/) || [])[1];
+      const sampleRate = parseInt(
+        (stdout.match(/sample_rate=(\d+)/) || [])[1] || "0",
+      );
+      const channels = parseInt(
+        (stdout.match(/channels=(\d+)/) || [])[1] || "0",
+      );
+
+      const valid =
+        codec === "pcm_s16le" && sampleRate === 16000 && channels === 1;
+      resolve(valid);
+    });
+
+    ffprobe.on("error", () => resolve(false));
+  });
+}
+
+// ============================================================
 // Утилита: очистка текста от галлюцинаций (повторов)
 // ============================================================
 function cleanTranscription(text) {
@@ -257,7 +296,22 @@ function cleanTranscription(text) {
     return result.join(" ");
   });
 
-  return cleaned
+  // Дополнительно: убираем предложения, где одно слово повторяется > 5 раз подряд
+  const filtered = cleaned.filter((sentence) => {
+    const words = sentence.toLowerCase().split(/\s+/);
+    let consecutive = 1;
+    for (let i = 1; i < words.length; i++) {
+      if (words[i] === words[i - 1]) {
+        consecutive++;
+        if (consecutive > 5) return false;
+      } else {
+        consecutive = 1;
+      }
+    }
+    return true;
+  });
+
+  return filtered
     .filter((s) => s.length > 0)
     .join(" ")
     .trim();
@@ -265,11 +319,40 @@ function cleanTranscription(text) {
 
 // ============================================================
 // ФУНКЦИЯ 1: Конвертация в WAV 16kHz/16bit/mono
+// (безопасная — не перезаписывает файл в себя)
 // ============================================================
 function convertToWav(inputPath, outputPath) {
   return new Promise((resolve, reject) => {
+    // Если входной и выходной — один и тот же файл,
+    // конвертируем во временный файл, потом переименовываем
+    let actualOutputPath = outputPath;
+    let isSameFile = false;
+
+    try {
+      const inputStat = fs.statSync(inputPath);
+      const outputStat = fs.existsSync(outputPath)
+        ? fs.statSync(outputPath)
+        : null;
+
+      if (
+        inputPath === outputPath ||
+        (outputStat && inputStat.ino === outputStat.ino)
+      ) {
+        isSameFile = true;
+        actualOutputPath = outputPath.replace(
+          /\.wav$/,
+          `_converted_${Date.now()}.wav`,
+        );
+        console.log(
+          `⚠️  Same file detected — using temp name: ${path.basename(actualOutputPath)}`,
+        );
+      }
+    } catch (e) {
+      // Если не удалось проверить — используем outputPath
+    }
+
     console.log(
-      `🔄 Converting: ${path.basename(inputPath)} -> ${path.basename(outputPath)}`,
+      `🔄 Converting: ${path.basename(inputPath)} -> ${path.basename(actualOutputPath)}`,
     );
 
     const ffmpeg = spawn("ffmpeg", [
@@ -282,7 +365,7 @@ function convertToWav(inputPath, outputPath) {
       "-ac",
       "1",
       "-y",
-      outputPath,
+      actualOutputPath,
     ]);
 
     let stderr = "";
@@ -304,6 +387,21 @@ function convertToWav(inputPath, outputPath) {
     ffmpeg.on("close", (code) => {
       if (code === 0) {
         console.log("✅ FFmpeg conversion successful");
+
+        if (isSameFile) {
+          try {
+            fs.unlinkSync(outputPath);
+            fs.renameSync(actualOutputPath, outputPath);
+            console.log(
+              `✅ Renamed temp file to: ${path.basename(outputPath)}`,
+            );
+          } catch (err) {
+            console.error("❌ Error renaming temp file:", err);
+            reject(new Error(`Failed to rename temp file: ${err.message}`));
+            return;
+          }
+        }
+
         resolve();
       } else {
         console.error("❌ FFmpeg error:", stderr);
@@ -329,7 +427,6 @@ function trimSilence(inputPath, outputPath) {
   return new Promise((resolve) => {
     console.log(`✂️  Trimming silence: ${path.basename(inputPath)}`);
 
-    // Проверяем длительность до обрезки
     const ffprobe = spawn("ffprobe", [
       "-v",
       "error",
@@ -355,7 +452,6 @@ function trimSilence(inputPath, outputPath) {
       const ffmpeg = spawn("ffmpeg", [
         "-i",
         inputPath,
-        // Менее агрессивный фильтр: -40dB, минимум 2 сек тишины
         "-af",
         "silenceremove=start_periods=1:start_duration=2:start_threshold=-40dB:detection=peak,areverse,silenceremove=start_periods=1:start_duration=2:start_threshold=-40dB:detection=peak,areverse",
         "-acodec",
@@ -384,7 +480,6 @@ function trimSilence(inputPath, outputPath) {
           return;
         }
 
-        // Проверяем длительность после обрезки
         const ffprobe2 = spawn("ffprobe", [
           "-v",
           "error",
@@ -525,27 +620,39 @@ function splitAudio(inputPath, segmentTime = 600) {
 // ============================================================
 // ФУНКЦИЯ 4: Распознавание ОДНОГО WAV файла
 // ============================================================
-function transcribeSingleFile(wavPath, language, options = {}, modelKey = DEFAULT_MODEL) {
+function transcribeSingleFile(
+  wavPath,
+  language,
+  options = {},
+  modelKey = DEFAULT_MODEL,
+) {
   return new Promise((resolve, reject) => {
     const model = AVAILABLE_MODELS[modelKey] || AVAILABLE_MODELS[DEFAULT_MODEL];
     const relativeWavPath = path.join("uploads", path.basename(wavPath));
 
     const args = [
-      "-m", model.path,
-      "-f", relativeWavPath,
-      "-l", language,
-      "-t", WHISPER_CONFIG.threads.toString(),
-      "-nt",  // --no-timestamps
+      "-m",
+      model.path,
+      "-f",
+      relativeWavPath,
+      "-l",
+      language,
+      "-t",
+      WHISPER_CONFIG.threads.toString(),
+      "-nt",
     ];
 
     // Анти-галлюцинации — только поддерживаемые флаги
     if (options.antiHallucination) {
-      args.push("-mc", "0");  // --max-context 0
-      args.push("-nf");       // --no-fallback
+      args.push("-mc", "0"); // не передавать контекст
+      args.push("-et", "2.0"); // ниже порог энтропии → раньше fail
+      args.push("-lpt", "-0.5"); // выше порог лог-вероятности
     }
 
     if (options.beamSize) {
-      args.push("-bs", options.beamSize.toString());  // --beam-size
+      // Ограничиваем beam size максимум 5 (8 — слишком агрессивно)
+      const bs = Math.min(options.beamSize, 5);
+      args.push("-bs", bs.toString());
     }
 
     console.log(`\n🚀 Whisper: ${path.basename(wavPath)}`);
@@ -589,7 +696,11 @@ function transcribeSingleFile(wavPath, language, options = {}, modelKey = DEFAUL
           "",
         );
 
-        if (cleanLine && cleanLine.length > 0 && !cleanLine.includes("system_info")) {
+        if (
+          cleanLine &&
+          cleanLine.length > 0 &&
+          !cleanLine.includes("system_info")
+        ) {
           transcribedText += (transcribedText ? " " : "") + cleanLine;
           console.log(`   📝 ${path.basename(wavPath)}: "${cleanLine}"`);
         }
@@ -676,9 +787,22 @@ async function transcribeAudio(audioFilename, language = "ru", options = {}) {
       `\n📁 Original file: ${audioFilename} (${(stats.size / 1024).toFixed(2)} KB)`,
     );
 
-    // Шаг 1: конвертация
-    console.log(`🔄 Converting to WAV (16kHz, 16bit, mono)...`);
-    await convertToWav(originalPath, wavPath);
+    // Шаг 1: конвертация (только если файл не является правильным WAV)
+    const isValidWav = await isAlreadyValidWav(originalPath);
+
+    if (isValidWav) {
+      console.log(
+        `✅ File is already valid WAV (16kHz/16bit/mono) — skipping conversion`,
+      );
+
+      if (originalPath !== wavPath) {
+        fs.renameSync(originalPath, wavPath);
+        console.log(`📁 Renamed: ${audioFilename} -> ${wavFilename}`);
+      }
+    } else {
+      console.log(`🔄 Converting to WAV (16kHz, 16bit, mono)...`);
+      await convertToWav(originalPath, wavPath);
+    }
 
     if (!fs.existsSync(wavPath)) {
       throw new Error("Converted WAV file not found");
@@ -702,7 +826,7 @@ async function transcribeAudio(audioFilename, language = "ru", options = {}) {
 
     let finalText = "";
 
-    // Шаг 2: нарезка
+    // Шаг 2: нарезка (если нужно)
     if (wavStats.size > SPLIT_THRESHOLD_BYTES) {
       console.log(
         `✂️  File is large (${(wavStats.size / 1024 / 1024).toFixed(2)} MB > ${SPLIT_THRESHOLD_BYTES / 1024 / 1024} MB) — splitting...`,
@@ -737,7 +861,6 @@ async function transcribeAudio(audioFilename, language = "ru", options = {}) {
           message: `Обработка части ${i + 1}/${parts.length} (${formatTime(part.start)} – ${formatTime(part.end)})...`,
         });
 
-        // Обрезка тишины (если включена)
         let resultPath = part.path;
         if (options.trimSilence) {
           const trimmedPath = path.join(UPLOADS_DIR, `trimmed_${part.name}`);
@@ -971,7 +1094,6 @@ app.post("/api/transcribe", upload.single("audio"), async (req, res) => {
     audioFilename = req.file.filename;
     const language = req.body.language || WHISPER_CONFIG.language;
 
-    // Настройки качества с клиента
     const options = {
       antiHallucination: req.body.antiHallucination === "1",
       trimSilence: req.body.trimSilence === "1",
