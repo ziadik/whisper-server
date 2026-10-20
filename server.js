@@ -296,7 +296,6 @@ function cleanTranscription(text) {
     return result.join(" ");
   });
 
-  // Дополнительно: убираем предложения, где одно слово повторяется > 5 раз подряд
   const filtered = cleaned.filter((sentence) => {
     const words = sentence.toLowerCase().split(/\s+/);
     let consecutive = 1;
@@ -323,8 +322,6 @@ function cleanTranscription(text) {
 // ============================================================
 function convertToWav(inputPath, outputPath) {
   return new Promise((resolve, reject) => {
-    // Если входной и выходной — один и тот же файл,
-    // конвертируем во временный файл, потом переименовываем
     let actualOutputPath = outputPath;
     let isSameFile = false;
 
@@ -347,9 +344,7 @@ function convertToWav(inputPath, outputPath) {
           `⚠️  Same file detected — using temp name: ${path.basename(actualOutputPath)}`,
         );
       }
-    } catch (e) {
-      // Если не удалось проверить — используем outputPath
-    }
+    } catch (e) {}
 
     console.log(
       `🔄 Converting: ${path.basename(inputPath)} -> ${path.basename(actualOutputPath)}`,
@@ -502,7 +497,6 @@ function trimSilence(inputPath, outputPath) {
         ffprobe2.on("close", () => {
           const newDuration = parseFloat(newDurationStr.trim()) || 0;
 
-          // Если после обрезки осталось < 50% исходного — используем оригинал
           if (newDuration < originalDuration * 0.5) {
             console.log(
               `   ⚠️ Trimmed too much (${newDuration.toFixed(1)}s of ${originalDuration.toFixed(1)}s) — using original`,
@@ -514,7 +508,6 @@ function trimSilence(inputPath, outputPath) {
             return;
           }
 
-          // Если осталось < 1 сек — считаем тишиной
           if (newDuration < 1) {
             console.log(
               `   ⚠️ File after trim is too small — probably silence only`,
@@ -619,6 +612,7 @@ function splitAudio(inputPath, segmentTime = 600) {
 
 // ============================================================
 // ФУНКЦИЯ 4: Распознавание ОДНОГО WAV файла
+// (возвращает { text, segments })
 // ============================================================
 function transcribeSingleFile(
   wavPath,
@@ -639,18 +633,17 @@ function transcribeSingleFile(
       language,
       "-t",
       WHISPER_CONFIG.threads.toString(),
-      "-nt",
+      // "-nt" УБРАН — теперь нужны таймкоды
     ];
 
-    // Анти-галлюцинации — только поддерживаемые флаги
+    // Анти-галлюцинации
     if (options.antiHallucination) {
-      args.push("-mc", "0"); // не передавать контекст
-      args.push("-et", "2.0"); // ниже порог энтропии → раньше fail
-      args.push("-lpt", "-0.5"); // выше порог лог-вероятности
+      args.push("-mc", "0");
+      args.push("-et", "2.0");
+      args.push("-lpt", "-0.5");
     }
 
     if (options.beamSize) {
-      // Ограничиваем beam size максимум 5 (8 — слишком агрессивно)
       const bs = Math.min(options.beamSize, 5);
       args.push("-bs", bs.toString());
     }
@@ -661,6 +654,7 @@ function transcribeSingleFile(
 
     let transcribedText = "";
     let stderr = "";
+    const segments = [];
 
     const whisperProcess = spawn(WHISPER_CONFIG.executable, args, {
       cwd: WHISPER_CONFIG.cwd,
@@ -670,12 +664,13 @@ function transcribeSingleFile(
     whisperProcess.stdout.on("data", (data) => {
       const output = data.toString();
       const lines = output.split("\n");
+
       for (const line of lines) {
         const trimmed = line.trim();
         if (!trimmed) continue;
 
+        // Пропускаем служебные строки
         if (
-          trimmed.includes("-->") ||
           trimmed.startsWith("whisper_") ||
           trimmed.startsWith("main:") ||
           trimmed.startsWith("system_info") ||
@@ -683,26 +678,47 @@ function transcribeSingleFile(
           trimmed.includes("mel time") ||
           trimmed.includes("sample time") ||
           trimmed.includes("encode time") ||
-          trimmed.includes("decode time") ||
-          trimmed.match(/^\[?\d{2}:\d{2}:\d{2}/)
+          trimmed.includes("decode time")
         ) {
           continue;
         }
 
-        let cleanLine = trimmed;
-        cleanLine = cleanLine.replace(/^\[\d{2}:\d{2}:\d{2}\.\d{3}\]\s*/, "");
-        cleanLine = cleanLine.replace(
-          /^\d{2}:\d{2}:\d{2}\.\d{3}\s*-->\s*\d{2}:\d{2}:\d{2}\.\d{3}\s*/,
-          "",
+        // Ищем строки с таймкодами: [HH:MM:SS.mmm --> HH:MM:SS.mmm] текст
+        const timeMatch = trimmed.match(
+          /^\[(\d{2}):(\d{2}):(\d{2})\.(\d{3})\s*-->\s*(\d{2}):(\d{2}):(\d{2})\.(\d{3})\]\s*(.+)$/,
         );
 
-        if (
-          cleanLine &&
-          cleanLine.length > 0 &&
-          !cleanLine.includes("system_info")
-        ) {
-          transcribedText += (transcribedText ? " " : "") + cleanLine;
-          console.log(`   📝 ${path.basename(wavPath)}: "${cleanLine}"`);
+        if (timeMatch) {
+          const startSec =
+            parseInt(timeMatch[1]) * 3600 +
+            parseInt(timeMatch[2]) * 60 +
+            parseInt(timeMatch[3]) +
+            parseInt(timeMatch[4]) / 1000;
+          const endSec =
+            parseInt(timeMatch[5]) * 3600 +
+            parseInt(timeMatch[6]) * 60 +
+            parseInt(timeMatch[7]) +
+            parseInt(timeMatch[8]) / 1000;
+          const text = timeMatch[9].trim();
+
+          if (text) {
+            segments.push({
+              start: startSec,
+              end: endSec,
+              text: text,
+            });
+            transcribedText += (transcribedText ? " " : "") + text;
+            console.log(
+              `   📝 [${formatTime(startSec)} – ${formatTime(endSec)}] ${text}`,
+            );
+          }
+          continue;
+        }
+
+        // Строки без таймкодов (на случай, если Whisper их не выдал)
+        if (trimmed.length > 0 && !trimmed.includes("system_info")) {
+          transcribedText += (transcribedText ? " " : "") + trimmed;
+          console.log(`   📝 ${trimmed}`);
         }
       }
     });
@@ -739,13 +755,18 @@ function transcribeSingleFile(
       }
 
       console.log(`\n📄 ${path.basename(wavPath)} — результат:`);
-      console.log(`   Raw:     ${rawText.length} симв.`);
+      console.log(
+        `   Raw:     ${rawText.length} симв., ${segments.length} сегментов`,
+      );
       if (options.cleanRepeats) {
         console.log(`   Cleaned: ${finalText.length} симв.`);
       }
       console.log(`   "${finalText.substring(0, 100)}"\n`);
 
-      resolve(finalText);
+      resolve({
+        text: finalText,
+        segments: segments,
+      });
     });
 
     whisperProcess.on("error", (error) => {
@@ -825,8 +846,9 @@ async function transcribeAudio(audioFilename, language = "ru", options = {}) {
     } catch (err) {}
 
     let finalText = "";
+    let allSegments = [];
 
-    // Шаг 2: нарезка (если нужно)
+    // Шаг 2: нарезка
     if (wavStats.size > SPLIT_THRESHOLD_BYTES) {
       console.log(
         `✂️  File is large (${(wavStats.size / 1024 / 1024).toFixed(2)} MB > ${SPLIT_THRESHOLD_BYTES / 1024 / 1024} MB) — splitting...`,
@@ -847,6 +869,8 @@ async function transcribeAudio(audioFilename, language = "ru", options = {}) {
       const results = [];
       for (let i = 0; i < parts.length; i++) {
         const part = parts[i];
+        const partOffset = part.start;
+
         console.log(
           `\n🎯 Processing part ${i + 1}/${parts.length}: ${part.name} (${formatTime(part.start)} – ${formatTime(part.end)})`,
         );
@@ -875,6 +899,7 @@ async function transcribeAudio(audioFilename, language = "ru", options = {}) {
               startTimeFormatted: formatTime(part.start),
               endTimeFormatted: formatTime(part.end),
               text: "",
+              segments: [],
               message: `Часть ${i + 1}/${parts.length} пуста (тишина)`,
             });
             try {
@@ -886,15 +911,30 @@ async function transcribeAudio(audioFilename, language = "ru", options = {}) {
         }
 
         try {
-          const text = await transcribeSingleFile(
+          const result = await transcribeSingleFile(
             resultPath,
             language,
             options,
             modelKey,
           );
-          if (text) {
-            results.push(text);
-            console.log(`   ✅ Part ${i + 1} done (${text.length} chars)`);
+
+          if (result.text) {
+            results.push(result.text);
+
+            // Глобальные сегменты
+            if (result.segments && result.segments.length > 0) {
+              for (const seg of result.segments) {
+                allSegments.push({
+                  start: partOffset + seg.start,
+                  end: partOffset + seg.end,
+                  text: seg.text,
+                });
+              }
+            }
+
+            console.log(
+              `   ✅ Part ${i + 1} done (${result.text.length} chars, ${result.segments?.length || 0} segments)`,
+            );
 
             broadcastStatus("part_result", {
               currentPart: i + 1,
@@ -903,7 +943,8 @@ async function transcribeAudio(audioFilename, language = "ru", options = {}) {
               endTime: part.end,
               startTimeFormatted: formatTime(part.start),
               endTimeFormatted: formatTime(part.end),
-              text: text,
+              text: result.text,
+              segments: result.segments,
               message: `Часть ${i + 1}/${parts.length} распознана`,
             });
           } else {
@@ -916,6 +957,7 @@ async function transcribeAudio(audioFilename, language = "ru", options = {}) {
               startTimeFormatted: formatTime(part.start),
               endTimeFormatted: formatTime(part.end),
               text: "",
+              segments: [],
               message: `Часть ${i + 1}/${parts.length} пуста`,
             });
           }
@@ -969,12 +1011,15 @@ async function transcribeAudio(audioFilename, language = "ru", options = {}) {
         }
       }
 
-      finalText = await transcribeSingleFile(
+      const result = await transcribeSingleFile(
         resultPath,
         language,
         options,
         modelKey,
       );
+
+      finalText = result.text;
+      allSegments = result.segments || [];
 
       broadcastStatus("part_result", {
         currentPart: 1,
@@ -984,6 +1029,7 @@ async function transcribeAudio(audioFilename, language = "ru", options = {}) {
         startTimeFormatted: "00:00",
         endTimeFormatted: formatTime(duration),
         text: finalText,
+        segments: allSegments,
         message: `Файл распознан`,
       });
 
@@ -1004,8 +1050,13 @@ async function transcribeAudio(audioFilename, language = "ru", options = {}) {
       );
     }
 
-    console.log(`\n✅ Final text length: ${finalText.length} chars`);
-    return finalText.trim();
+    console.log(
+      `\n✅ Final text length: ${finalText.length} chars, ${allSegments.length} segments`,
+    );
+    return {
+      text: finalText.trim(),
+      segments: allSegments,
+    };
   } catch (error) {
     console.error("❌ Error:", error.message);
     try {
@@ -1118,19 +1169,16 @@ app.post("/api/transcribe", upload.single("audio"), async (req, res) => {
       });
     } catch (err) {}
 
-    const transcribedText = await transcribeAudio(
-      audioFilename,
-      language,
-      options,
-    );
+    const result = await transcribeAudio(audioFilename, language, options);
 
     console.log(
-      `✅ Transcription complete: "${transcribedText.substring(0, 100)}..."`,
+      `✅ Transcription complete: "${result.text.substring(0, 100)}..."`,
     );
 
     res.json({
       success: true,
-      text: transcribedText,
+      text: result.text,
+      segments: result.segments,
       language: language,
       model: options.model,
       timestamp: new Date().toISOString(),

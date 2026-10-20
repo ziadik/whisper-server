@@ -165,7 +165,17 @@
             <div class="results-section">
                 <div class="results-header">
                     <h2>Результат распознавания</h2>
-                    <button id="copyBtn" class="btn btn-small" disabled>📋 Копировать</button>
+                    <div class="results-controls">
+                        <label class="view-toggle">
+                            <input type="radio" name="resultView" value="with-time" checked>
+                            <span>⏱ С таймкодами</span>
+                        </label>
+                        <label class="view-toggle">
+                            <input type="radio" name="resultView" value="without-time">
+                            <span>📝 Без таймкодов</span>
+                        </label>
+                        <button id="copyBtn" class="btn btn-small" disabled>📋 Копировать</button>
+                    </div>
                 </div>
                 <div class="transcription-result" id="transcriptionResult">
                     <div class="placeholder">Нажмите на запись или загрузите файл...</div>

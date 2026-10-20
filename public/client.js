@@ -16,17 +16,41 @@ class WhisperClient {
     this.liveTextParts = [];
     this.availableModels = [];
 
+    // Последний результат и режим просмотра
+    this.lastResult = { text: "", segments: [] };
+    this.viewMode = "with-time"; // 'with-time' | 'without-time'
+
     this.init();
   }
 
   async init() {
     this.bindEvents();
     this.initQualityPreset();
+    this.initViewMode();
     await this.loadModels();
     await this.checkServerStatus();
     this.initWebSocket();
     this.loadLanguages();
     this.checkMicrophoneSupport();
+  }
+
+  // ============================================================
+  // Режим просмотра (с таймкодами / без)
+  // ============================================================
+  initViewMode() {
+    const radios = document.querySelectorAll('input[name="resultView"]');
+    const saved = localStorage.getItem("viewMode") || "with-time";
+    this.viewMode = saved;
+
+    radios.forEach((radio) => {
+      if (radio.value === saved) radio.checked = true;
+
+      radio.addEventListener("change", (e) => {
+        this.viewMode = e.target.value;
+        localStorage.setItem("viewMode", this.viewMode);
+        this.renderResult();
+      });
+    });
   }
 
   // ============================================================
@@ -57,7 +81,6 @@ class WhisperClient {
         select.appendChild(option);
       }
 
-      // Восстанавливаем из localStorage
       const saved = localStorage.getItem("selectedModel");
       if (saved) {
         const opt = select.querySelector(
@@ -227,11 +250,7 @@ class WhisperClient {
     formData.append("cleanRepeats", opts.cleanRepeats ? "1" : "0");
     formData.append("temperature", opts.temperature);
     formData.append("beamSize", opts.beamSize);
-
-    // Модель
     formData.append("model", this.getSelectedModel());
-
-    console.log("Quality options:", opts, "Model:", this.getSelectedModel());
   }
 
   // ============================================================
@@ -313,7 +332,6 @@ class WhisperClient {
         if (indicator) indicator.style.background = "#4ade80";
         this.addStatusMessage("Сервер подключен и готов к работе", "success");
 
-        // Показываем, какие модели доступны
         if (data.models) {
           const available = Object.entries(data.models)
             .filter(([_, exists]) => exists)
@@ -430,6 +448,7 @@ class WhisperClient {
               const endTime = data.data?.endTime;
               const startStr = data.data?.startTimeFormatted || "";
               const endStr = data.data?.endTimeFormatted || "";
+              const segments = data.data?.segments || [];
 
               if (partText) {
                 this.appendLiveResult(
@@ -438,9 +457,10 @@ class WhisperClient {
                   totalParts,
                   startTime,
                   endTime,
+                  segments,
                 );
                 this.addStatusMessage(
-                  `✅ Часть ${currentPart}/${totalParts} (${startStr} – ${endStr}) распознана (${partText.length} симв.)`,
+                  `✅ Часть ${currentPart}/${totalParts} (${startStr} – ${endStr}) распознана (${partText.length} симв., ${segments.length} сегм.)`,
                   "success",
                 );
               } else {
@@ -607,7 +627,7 @@ class WhisperClient {
       const data = await transcribeResponse.json();
 
       if (data.success) {
-        this.setTranscriptionResult(data.text, "success");
+        this.setTranscriptionResult(data.text, "success", data.segments || []);
         this.addStatusMessage(
           `✅ Файл "${fileName}" успешно распознан (модель: ${data.model || "?"})`,
           "success",
@@ -864,7 +884,7 @@ class WhisperClient {
       const data = await response.json();
 
       if (data.success) {
-        this.setTranscriptionResult(data.text, "success");
+        this.setTranscriptionResult(data.text, "success", data.segments || []);
         this.addStatusMessage(
           `✅ Транскрипция успешно завершена (модель: ${data.model || "?"})`,
           "success",
@@ -946,7 +966,7 @@ class WhisperClient {
       const data = await response.json();
 
       if (data.success) {
-        this.setTranscriptionResult(data.text, "success");
+        this.setTranscriptionResult(data.text, "success", data.segments || []);
         this.addStatusMessage(
           `✅ Файл успешно распознан (модель: ${data.model || "?"})`,
           "success",
@@ -988,7 +1008,10 @@ class WhisperClient {
     }
   }
 
-  setTranscriptionResult(text, type) {
+  // ============================================================
+  // Результат — с сохранением и отрисовкой по режиму
+  // ============================================================
+  setTranscriptionResult(text, type, segments = []) {
     const resultDiv = document.getElementById("transcriptionResult");
     const copyBtn = document.getElementById("copyBtn");
 
@@ -998,12 +1021,57 @@ class WhisperClient {
       if (document.getElementById("liveResult")) return;
       resultDiv.innerHTML = `<div class="processing" style="text-align: center; color: #667eea;">${text}</div>`;
       if (copyBtn) copyBtn.disabled = true;
-    } else if (type === "success") {
-      resultDiv.innerHTML = `<div class="result-text" style="white-space: pre-wrap; word-wrap: break-word;">${this.escapeHtml(text)}</div>`;
-      if (copyBtn) copyBtn.disabled = false;
-    } else {
+      return;
+    }
+
+    if (type === "error") {
       resultDiv.innerHTML = `<div class="error-text" style="text-align: center; color: #ef4444;">${this.escapeHtml(text)}</div>`;
       if (copyBtn) copyBtn.disabled = true;
+      return;
+    }
+
+    // Успех
+    this.lastResult = {
+      text: text || "",
+      segments: segments || [],
+    };
+
+    this.renderResult();
+    if (copyBtn) copyBtn.disabled = false;
+  }
+
+  renderResult() {
+    const resultDiv = document.getElementById("transcriptionResult");
+    if (!resultDiv) return;
+
+    const { text, segments } = this.lastResult;
+
+    if (!text && (!segments || segments.length === 0)) {
+      resultDiv.innerHTML = `<div class="placeholder">Нет результата</div>`;
+      return;
+    }
+
+    // Режим "Без таймкодов"
+    if (this.viewMode === "without-time") {
+      resultDiv.innerHTML = `<div class="result-text" style="white-space: pre-wrap; word-wrap: break-word;">${this.escapeHtml(text)}</div>`;
+      return;
+    }
+
+    // Режим "С таймкодами"
+    if (segments && segments.length > 0) {
+      const segmentsHtml = segments
+        .map(
+          (seg) => `
+            <div class="result-segment">
+              <span class="result-segment-time">[${this.formatTime(seg.start)} – ${this.formatTime(seg.end)}]</span>
+              <span class="result-segment-text">${this.escapeHtml(seg.text)}</span>
+            </div>
+          `,
+        )
+        .join("");
+      resultDiv.innerHTML = `<div class="result-with-timestamps">${segmentsHtml}</div>`;
+    } else {
+      resultDiv.innerHTML = `<div class="result-text" style="white-space: pre-wrap; word-wrap: break-word;">${this.escapeHtml(text)}</div>`;
     }
   }
 
@@ -1020,6 +1088,7 @@ class WhisperClient {
       </div>
     `;
     this.liveTextParts = [];
+    this.lastResult = { text: "", segments: [] };
   }
 
   showLiveResult() {
@@ -1031,7 +1100,14 @@ class WhisperClient {
     }
   }
 
-  appendLiveResult(text, currentPart, totalParts, startTime, endTime) {
+  appendLiveResult(
+    text,
+    currentPart,
+    totalParts,
+    startTime,
+    endTime,
+    segments = [],
+  ) {
     const container = document.getElementById("liveText");
     const liveHeader = document.getElementById("liveHeaderText");
 
@@ -1051,15 +1127,42 @@ class WhisperClient {
 
     const partDiv = document.createElement("div");
     partDiv.className = "live-part";
-    partDiv.innerHTML = `
-      <div class="live-part-header">
-        <span class="live-part-label">Часть ${currentPart}/${totalParts}</span>
-        ${timeLabel}
-      </div>
-      <div class="live-part-text">${this.escapeHtml(text)}</div>
-    `;
-    container2.appendChild(partDiv);
 
+    // Если режим "без таймкодов" — только текст
+    if (
+      this.viewMode === "without-time" ||
+      !segments ||
+      segments.length === 0
+    ) {
+      partDiv.innerHTML = `
+        <div class="live-part-header">
+          <span class="live-part-label">Часть ${currentPart}/${totalParts}</span>
+          ${timeLabel}
+        </div>
+        <div class="live-part-text">${this.escapeHtml(text)}</div>
+      `;
+    } else {
+      const segmentsHtml = segments
+        .map(
+          (seg) => `
+            <div class="live-segment">
+              <span class="live-segment-time">[${this.formatTime(seg.start)} – ${this.formatTime(seg.end)}]</span>
+              <span class="live-segment-text">${this.escapeHtml(seg.text)}</span>
+            </div>
+          `,
+        )
+        .join("");
+
+      partDiv.innerHTML = `
+        <div class="live-part-header">
+          <span class="live-part-label">Часть ${currentPart}/${totalParts}</span>
+          ${timeLabel}
+        </div>
+        ${segmentsHtml}
+      `;
+    }
+
+    container2.appendChild(partDiv);
     container2.scrollTop = container2.scrollHeight;
 
     if (liveHeader) {
@@ -1067,7 +1170,7 @@ class WhisperClient {
     }
 
     if (!this.liveTextParts) this.liveTextParts = [];
-    this.liveTextParts.push({ text, startTime, endTime });
+    this.liveTextParts.push({ text, startTime, endTime, segments });
   }
 
   formatTime(seconds) {
@@ -1086,10 +1189,25 @@ class WhisperClient {
     const resultDiv = document.getElementById("transcriptionResult");
     if (!resultDiv) return;
 
-    const text = resultDiv.innerText;
+    let textToCopy = "";
+
+    if (this.viewMode === "without-time") {
+      textToCopy = this.lastResult.text || "";
+    } else {
+      if (this.lastResult.segments && this.lastResult.segments.length > 0) {
+        textToCopy = this.lastResult.segments
+          .map(
+            (seg) =>
+              `[${this.formatTime(seg.start)} – ${this.formatTime(seg.end)}] ${seg.text}`,
+          )
+          .join("\n");
+      } else {
+        textToCopy = this.lastResult.text || "";
+      }
+    }
 
     navigator.clipboard
-      .writeText(text)
+      .writeText(textToCopy)
       .then(() => {
         this.addStatusMessage("📋 Текст скопирован в буфер обмена", "success");
         const copyBtn = document.getElementById("copyBtn");
